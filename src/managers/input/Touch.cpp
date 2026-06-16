@@ -5,39 +5,43 @@
 #include "../../desktop/view/LayerSurface.hpp"
 #include "../../desktop/state/FocusState.hpp"
 #include "../../config/ConfigValue.hpp"
-#include "../../helpers/Monitor.hpp"
+#include "../../output/Monitor.hpp"
+#include "../../state/MonitorState.hpp"
 #include "../../devices/ITouch.hpp"
 #include "../../event/EventBus.hpp"
 #include "../SeatManager.hpp"
+#include "../../protocols/core/DataDevice.hpp"
 #include "debug/log/Logger.hpp"
 #include "UnifiedWorkspaceSwipeGesture.hpp"
 
 void CInputManager::onTouchDown(ITouch::SDownEvent e) {
     m_lastInputTouch = true;
 
-    static auto PSWIPETOUCH  = CConfigValue<Hyprlang::INT>("gestures:workspace_swipe_touch");
-    static auto PGAPSOUTDATA = CConfigValue<Hyprlang::CUSTOMTYPE>("general:gaps_out");
-    auto* const PGAPSOUT     = sc<Config::CCssGapData*>((PGAPSOUTDATA.ptr())->getData());
+    static auto PSWIPETOUCH  = CConfigValue<Config::INTEGER>("gestures:workspace_swipe_touch");
+    static auto PGAPSOUTDATA = CConfigValue<Config::IComplexConfigValue>("general:gaps_out");
+    auto* const PGAPSOUT     = sc<Config::CCssGapData*>((PGAPSOUTDATA.ptr()));
     // TODO: WORKSPACERULE.gapsOut.value_or()
     auto                 gapsOut     = *PGAPSOUT;
-    static auto          PBORDERSIZE = CConfigValue<Hyprlang::INT>("general:border_size");
-    static auto          PSWIPEINVR  = CConfigValue<Hyprlang::INT>("gestures:workspace_swipe_touch_invert");
+    static auto          PBORDERSIZE = CConfigValue<Config::INTEGER>("general:border_size");
+    static auto          PSWIPEINVR  = CConfigValue<Config::INTEGER>("gestures:workspace_swipe_touch_invert");
 
     Event::SCallbackInfo info;
     Event::bus()->m_events.input.touch.down.emit(e, info);
     if (info.cancelled)
         return;
 
-    auto PMONITOR = g_pCompositor->getMonitorFromName(!e.device->m_boundOutput.empty() ? e.device->m_boundOutput : "");
+    auto PMONITOR = State::monitorState()->query().name(!e.device->m_boundOutput.empty() ? e.device->m_boundOutput : "").run();
 
     PMONITOR = PMONITOR ? PMONITOR : Desktop::focusState()->monitor();
 
-    const auto TOUCH_COORDS = PMONITOR->m_position + (e.pos * PMONITOR->m_size);
-
-    refocus(TOUCH_COORDS);
-
     if (PMONITOR != Desktop::focusState()->monitor())
         Desktop::focusState()->rawMonitorFocus(PMONITOR);
+
+    const auto TOUCH_COORDS = PMONITOR->m_position + (e.pos * PMONITOR->m_size);
+
+    m_touchData.lastTouchPos = TOUCH_COORDS;
+
+    refocus(TOUCH_COORDS);
 
     if (m_clickBehavior == CLICKMODE_KILL) {
         IPointer::SButtonEvent e;
@@ -137,6 +141,12 @@ void CInputManager::onTouchMove(ITouch::SMotionEvent e) {
 
     m_lastCursorMovement.reset();
 
+    // Cache the global touch position so listeners (in particular the dnd
+    // touchMove listener emitted just below) and renderers can resolve where
+    // the finger currently is in layout coordinates.
+    if (const auto PMONITOR = Desktop::focusState()->monitor(); PMONITOR)
+        m_touchData.lastTouchPos = PMONITOR->m_position + (e.pos * PMONITOR->m_size);
+
     Event::SCallbackInfo info;
     Event::bus()->m_events.input.touch.motion.emit(e, info);
     if (info.cancelled)
@@ -149,8 +159,8 @@ void CInputManager::onTouchMove(ITouch::SMotionEvent e) {
 
         const auto  ANIMSTYLE     = g_pUnifiedWorkspaceSwipe->m_workspaceBegin->m_renderOffset->getStyle();
         const bool  VERTANIMS     = ANIMSTYLE == "slidevert" || ANIMSTYLE.starts_with("slidefadevert");
-        static auto PSWIPEINVR    = CConfigValue<Hyprlang::INT>("gestures:workspace_swipe_touch_invert");
-        static auto PSWIPEDIST    = CConfigValue<Hyprlang::INT>("gestures:workspace_swipe_distance");
+        static auto PSWIPEINVR    = CConfigValue<Config::INTEGER>("gestures:workspace_swipe_touch_invert");
+        static auto PSWIPEDIST    = CConfigValue<Config::INTEGER>("gestures:workspace_swipe_distance");
         const auto  SWIPEDISTANCE = std::clamp(*PSWIPEDIST, sc<int64_t>(1LL), sc<int64_t>(UINT32_MAX));
         // Handle the workspace swipe if there is one
         if (g_pUnifiedWorkspaceSwipe->m_initialDirection == -1) {
@@ -168,8 +178,16 @@ void CInputManager::onTouchMove(ITouch::SMotionEvent e) {
             g_pUnifiedWorkspaceSwipe->update(SWIPEDISTANCE * (1 - (VERTANIMS ? e.pos.y : e.pos.x)));
         return;
     }
+    // During a drag-and-drop session, repick the surface under the finger so
+    // wl_data_device enter/leave/offer follow the touch point, the same way
+    // cursor motion drives pointer focus during mouse drags. Touch events are
+    // not delivered to surfaces during the drag (mouse drags work likewise).
+    if (PROTO::data->dndActive()) {
+        refocus(m_touchData.lastTouchPos);
+        return;
+    }
     if (m_touchData.touchFocusLockSurface) {
-        const auto PMONITOR     = g_pCompositor->getMonitorFromID(m_touchData.touchFocusLockSurface->iMonitorID);
+        const auto PMONITOR     = State::monitorState()->query().id(m_touchData.touchFocusLockSurface->iMonitorID).run();
         const auto TOUCH_COORDS = PMONITOR->m_position + (e.pos * PMONITOR->m_size);
         const auto LOCAL        = TOUCH_COORDS - PMONITOR->m_position;
         g_pSeatManager->sendTouchMotion(e.timeMs, e.touchID, LOCAL);

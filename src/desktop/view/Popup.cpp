@@ -12,6 +12,8 @@
 #include "../../managers/eventLoop/EventLoopManager.hpp"
 #include "../../render/Renderer.hpp"
 #include "../../render/OpenGL.hpp"
+#include "../../state/MonitorState.hpp"
+#include <array>
 #include <ranges>
 
 using namespace Desktop;
@@ -69,7 +71,10 @@ eViewType CPopup::type() const {
 }
 
 bool CPopup::visible() const {
-    if ((!m_mapped || !m_wlSurface->resource()) && (!m_fadingOut || m_alpha->value() > 0.F))
+    if (m_fadingOut && m_alpha->value() > 0.F)
+        return true;
+
+    if (!m_mapped || !m_wlSurface->resource())
         return false;
 
     if (!m_windowOwner.expired())
@@ -189,7 +194,7 @@ void CPopup::onMap() {
     m_lastSize = m_resource->m_surface->m_surface->m_current.size;
 
     const auto COORDS   = coordsGlobal();
-    const auto PMONITOR = g_pCompositor->getMonitorFromVector(COORDS);
+    const auto PMONITOR = State::monitorState()->query().vec(COORDS).run();
 
     CBox       box = m_wlSurface->resource()->extends();
     box.translate(COORDS).expand(4);
@@ -305,7 +310,7 @@ void CPopup::onCommit(bool ignoreSiblings) {
         if (PREV_SIZE != m_lastSize)
             invalidateTreeExtentsCache();
 
-        static auto PLOGDAMAGE = CConfigValue<Hyprlang::INT>("debug:log_damage");
+        static auto PLOGDAMAGE = CConfigValue<Config::INTEGER>("debug:log_damage");
         if (*PLOGDAMAGE)
             Log::logger->log(Log::DEBUG, "Refusing to commit damage from a subsurface of {} because it's invisible.", m_windowOwner.lock());
         return;
@@ -319,6 +324,7 @@ void CPopup::onCommit(bool ignoreSiblings) {
 
     if (m_lastSize != m_resource->m_surface->m_surface->m_current.size || m_requestedReposition || m_lastPos != COORDSLOCAL) {
         CBox box = {localToGlobal(m_lastPos), m_lastSize};
+        box.expand(4);
         g_pHyprRenderer->damageBox(box);
         m_lastSize = m_resource->m_surface->m_surface->m_current.size;
         box        = {COORDS, m_lastSize};
@@ -347,8 +353,6 @@ void CPopup::onReposition() {
 
     m_requestedReposition = true;
 
-    m_lastPos = coordsRelativeToParent();
-
     invalidateTreeExtentsCache();
 
     reposition();
@@ -356,7 +360,7 @@ void CPopup::onReposition() {
 
 void CPopup::reposition() {
     const auto COORDS   = t1ParentCoords();
-    const auto PMONITOR = g_pCompositor->getMonitorFromVector(COORDS);
+    const auto PMONITOR = State::monitorState()->query().vec(COORDS).run();
 
     if (!PMONITOR)
         return;
@@ -436,6 +440,7 @@ void CPopup::recheckChildrenRecursive() {
         return;
 
     std::vector<WP<CPopup>> cpy;
+    cpy.reserve(m_children.size());
     std::ranges::for_each(m_children, [&cpy](const auto& el) { cpy.emplace_back(el); });
     for (auto const& c : cpy) {
         if (!c || !c->visible())
@@ -454,27 +459,38 @@ Vector2D CPopup::size() const {
 }
 
 void CPopup::sendScale() {
+    float scale;
     if (!m_windowOwner.expired())
-        g_pCompositor->setPreferredScaleForSurface(m_wlSurface->resource(), m_windowOwner->wlSurface()->m_lastScaleFloat);
+        scale = m_windowOwner->wlSurface()->m_lastScaleFloat;
     else if (!m_layerOwner.expired())
-        g_pCompositor->setPreferredScaleForSurface(m_wlSurface->resource(), m_layerOwner->wlSurface()->m_lastScaleFloat);
+        scale = m_layerOwner->wlSurface()->m_lastScaleFloat;
     else
         UNREACHABLE();
+
+    // Walk the whole surface tree, not just the popup's root surface: a popup
+    // can wrap its content in subsurfaces (e.g. Firefox/GTK render the popup
+    // content in a wp_viewport'd subsurface). Scaling only the root leaves
+    // those subsurfaces at the default 1.0 fractional scale, so under
+    // fractional scaling the content renders at the wrong size and the input
+    // geometry desyncs from the visible geometry. Mirrors CWindow::sendScale.
+    m_wlSurface->resource()->breadthfirst([scale](SP<CWLSurfaceResource> s, const Vector2D& offset, void* d) { g_pCompositor->setPreferredScaleForSurface(s, scale); }, nullptr);
 }
 
-void CPopup::bfHelper(std::vector<SP<CPopup>> const& nodes, std::function<void(SP<CPopup>, void*)> fn, void* data) {
+void CPopup::bfHelper(std::span<const SP<CPopup>> nodes, std::function<void(SP<CPopup>, void*)> fn, void* data) {
     for (auto const& n : nodes) {
         fn(n, data);
     }
 
     std::vector<SP<CPopup>> nodes2;
-    nodes2.reserve(nodes.size() * 2);
 
     for (auto const& n : nodes) {
         if (!n)
             continue;
 
         for (auto const& c : n->m_children) {
+            if (nodes2.empty())
+                nodes2.reserve(nodes.size() * 2);
+
             nodes2.emplace_back(c->m_self.lock());
         }
     }
@@ -487,8 +503,7 @@ void CPopup::breadthfirst(std::function<void(SP<CPopup>, void*)> fn, void* data)
     if (!m_self)
         return;
 
-    std::vector<SP<CPopup>> popups;
-    popups.emplace_back(m_self.lock());
+    const std::array popups = {m_self.lock()};
     bfHelper(popups, fn, data);
 }
 

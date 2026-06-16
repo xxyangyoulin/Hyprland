@@ -5,7 +5,9 @@
 #include "../managers/TokenManager.hpp"
 #include "../desktop/state/FocusState.hpp"
 #include "../desktop/history/WorkspaceHistoryTracker.hpp"
-#include "Monitor.hpp"
+#include "../output/Monitor.hpp"
+#include "../state/MonitorState.hpp"
+#include "../state/WorkspaceState.hpp"
 #include "../config/shared/workspace/WorkspaceRuleManager.hpp"
 #include "fs/FsUtils.hpp"
 #include <optional>
@@ -111,12 +113,11 @@ std::optional<float> getPlusMinusKeywordResult(std::string source, float relativ
     }
 }
 
-bool isDirection(const std::string& arg) {
-    return arg == "l" || arg == "r" || arg == "u" || arg == "d" || arg == "t" || arg == "b";
-}
+bool isDirection(std::string_view sv) {
+    if (sv[0] == 'l' || sv[0] == 'r' || sv[0] == 'u' || sv[0] == 'd' || sv[0] == 't' || sv[0] == 'b')
+        return sv.length() == 1 || sv == "left" || sv == "right" || sv == "up" || sv == "down" || sv == "top" || sv == "bottom";
 
-bool isDirection(const char& arg) {
-    return arg == 'l' || arg == 'r' || arg == 'u' || arg == 'd' || arg == 't' || arg == 'b';
+    return false;
 }
 
 static bool isAutoIDdWorkspace(WORKSPACEID id) {
@@ -131,18 +132,18 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
 
         if (in.length() > 8) {
             const auto NAME = in.substr(8);
-            const auto WS   = g_pCompositor->getWorkspaceByName("special:" + NAME);
+            const auto WS   = State::workspaceState()->query().name("special:" + NAME).run();
 
-            return {WS ? WS->m_id : g_pCompositor->getNewSpecialID(), "special:" + NAME};
+            return {WS ? WS->m_id : State::workspaceState()->newSpecialID(), "special:" + NAME};
         }
 
         result.id = SPECIAL_WORKSPACE_START;
         return result;
     } else if (in.starts_with("name:")) {
         const auto WORKSPACENAME = in.substr(in.find_first_of(':') + 1);
-        const auto WORKSPACE     = g_pCompositor->getWorkspaceByName(WORKSPACENAME);
+        const auto WORKSPACE     = State::workspaceState()->query().name(WORKSPACENAME).run();
         if (!WORKSPACE) {
-            result.id = g_pCompositor->getNextAvailableNamedWorkspace();
+            result.id = State::workspaceState()->nextAvailableNamedWorkspace();
         } else {
             result.id = WORKSPACE->m_id;
         }
@@ -158,7 +159,7 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
         std::set<WORKSPACEID> invalidWSes;
         if (same_mon) {
             for (auto const& rule : Config::workspaceRuleMgr()->getAllWorkspaceRules()) {
-                const auto PMONITOR = g_pCompositor->getMonitorFromString(rule.m_monitor);
+                const auto PMONITOR = State::monitorState()->query().relativeTo(Desktop::focusState()->monitor()).configString(rule.m_monitor).run();
                 if (PMONITOR && (PMONITOR->m_id != Desktop::focusState()->monitor()->m_id))
                     invalidWSes.insert(rule.m_workspaceId);
             }
@@ -166,7 +167,7 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
 
         WORKSPACEID id = next ? Desktop::focusState()->monitor()->activeWorkspaceID() : 0;
         while (++id < LONG_MAX) {
-            const auto PWORKSPACE = g_pCompositor->getWorkspaceByID(id);
+            const auto PWORKSPACE = State::workspaceState()->query().id(id).run();
             if (!invalidWSes.contains(id) && (!PWORKSPACE || PWORKSPACE->getWindows() == 0)) {
                 result.id = id;
                 return result;
@@ -187,7 +188,7 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
         if (PREVWORKSPACEIDNAME.id == -1)
             return {WORKSPACE_INVALID};
 
-        const auto PLASTWORKSPACE = g_pCompositor->getWorkspaceByID(PREVWORKSPACEIDNAME.id);
+        const auto PLASTWORKSPACE = State::workspaceState()->query().id(PREVWORKSPACEIDNAME.id).run();
 
         if (!PLASTWORKSPACE) {
             Log::logger->log(Log::DEBUG, "previous workspace {} doesn't exist yet", PREVWORKSPACEIDNAME.id);
@@ -231,14 +232,14 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
             std::set<WORKSPACEID> invalidWSes;
 
             // Collect all the workspaces we can't jump to.
-            for (auto const& ws : g_pCompositor->getWorkspaces()) {
+            for (auto const& ws : State::workspaceState()->workspaces()) {
                 if (ws->m_isSpecialWorkspace || (ws->m_monitor != Desktop::focusState()->monitor())) {
                     // Can't jump to this workspace
                     invalidWSes.insert(ws->m_id);
                 }
             }
             for (auto const& rule : Config::workspaceRuleMgr()->getAllWorkspaceRules()) {
-                const auto PMONITOR = g_pCompositor->getMonitorFromString(rule.m_monitor);
+                const auto PMONITOR = State::monitorState()->query().relativeTo(Desktop::focusState()->monitor()).configString(rule.m_monitor).run();
                 if (!PMONITOR || PMONITOR->m_id == Desktop::focusState()->monitor()->m_id) {
                     // Can't be invalid
                     continue;
@@ -249,7 +250,7 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
 
             // Prepare all named workspaces in case when we need them
             std::vector<WORKSPACEID> namedWSes;
-            for (auto const& ws : g_pCompositor->getWorkspaces()) {
+            for (auto const& ws : State::workspaceState()->workspaces()) {
                 if (ws->m_isSpecialWorkspace || (ws->m_monitor != Desktop::focusState()->monitor()) || ws->m_id >= 0)
                     continue;
 
@@ -366,9 +367,9 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
                 result.id = finalWSID;
             }
 
-            const auto PWORKSPACE = g_pCompositor->getWorkspaceByID(result.id);
+            const auto PWORKSPACE = State::workspaceState()->query().id(result.id).run();
             if (PWORKSPACE)
-                result.name = g_pCompositor->getWorkspaceByID(result.id)->m_name;
+                result.name = PWORKSPACE->m_name;
             else
                 result.name = std::to_string(result.id);
 
@@ -393,7 +394,7 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
             int                      remains = sc<int>(result.id);
 
             std::vector<WORKSPACEID> validWSes;
-            for (auto const& ws : g_pCompositor->getWorkspaces()) {
+            for (auto const& ws : State::workspaceState()->workspaces()) {
                 if (ws->m_isSpecialWorkspace || (ws->m_monitor != Desktop::focusState()->monitor() && !onAllMonitors))
                     continue;
 
@@ -439,7 +440,7 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
             }
 
             result.id   = validWSes[currentItem];
-            result.name = g_pCompositor->getWorkspaceByID(validWSes[currentItem])->m_name;
+            result.name = State::workspaceState()->query().id(validWSes[currentItem]).run()->m_name;
         } else {
             if (in[0] == '+' || in[0] == '-') {
                 if (Desktop::focusState()->monitor()) {
@@ -456,7 +457,7 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
                 result.id = std::max(std::stoi(in), 1);
             else {
                 // maybe name
-                const auto PWORKSPACE = g_pCompositor->getWorkspaceByName(in);
+                const auto PWORKSPACE = State::workspaceState()->query().name(in).run();
                 if (PWORKSPACE)
                     result.id = PWORKSPACE->m_id;
             }
@@ -523,54 +524,6 @@ std::string execAndGet(const char* cmd) {
     return proc.stdOut();
 }
 
-void logSystemInfo() {
-    struct utsname unameInfo;
-
-    uname(&unameInfo);
-
-    Log::logger->log(Log::DEBUG, "System name: {}", std::string{unameInfo.sysname});
-    Log::logger->log(Log::DEBUG, "Node name: {}", std::string{unameInfo.nodename});
-    Log::logger->log(Log::DEBUG, "Release: {}", std::string{unameInfo.release});
-    Log::logger->log(Log::DEBUG, "Version: {}", std::string{unameInfo.version});
-
-    Log::logger->log(Log::DEBUG, "\n");
-
-#if defined(__DragonFly__) || defined(__FreeBSD__)
-    const std::string GPUINFO = execAndGet("pciconf -lv | grep -F -A4 vga");
-#elif defined(__arm__) || defined(__aarch64__)
-    std::string                 GPUINFO;
-    const std::filesystem::path dev_tree = "/proc/device-tree";
-    try {
-        if (std::filesystem::exists(dev_tree) && std::filesystem::is_directory(dev_tree)) {
-            std::for_each(std::filesystem::directory_iterator(dev_tree), std::filesystem::directory_iterator{}, [&](const std::filesystem::directory_entry& entry) {
-                if (std::filesystem::is_directory(entry) && entry.path().filename().string().starts_with("soc")) {
-                    std::for_each(std::filesystem::directory_iterator(entry.path()), std::filesystem::directory_iterator{}, [&](const std::filesystem::directory_entry& sub_entry) {
-                        if (std::filesystem::is_directory(sub_entry) && sub_entry.path().filename().string().starts_with("gpu")) {
-                            std::filesystem::path file_path = sub_entry.path() / "compatible";
-                            std::ifstream         file(file_path);
-                            if (file)
-                                GPUINFO.append(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
-                        }
-                    });
-                }
-            });
-        }
-    } catch (...) { GPUINFO = "error"; }
-#else
-    const std::string GPUINFO = execAndGet("lspci -vnn | grep -E '(VGA|Display|3D)'");
-#endif
-    Log::logger->log(Log::DEBUG, "GPU information:\n{}\n", GPUINFO);
-
-    if (GPUINFO.contains("NVIDIA")) {
-        Log::logger->log(Log::WARN, "Warning: you're using an NVIDIA GPU. Make sure you follow the instructions on the wiki if anything is amiss.\n");
-    }
-
-    // log etc
-    Log::logger->log(Log::DEBUG, "os-release:");
-
-    Log::logger->log(Log::DEBUG, "{}", NFsUtils::readFileAsString("/etc/os-release").value_or("error"));
-}
-
 int64_t getPPIDof(int64_t pid) {
 #if defined(KERN_PROC_PID)
     int mib[] = {
@@ -618,119 +571,6 @@ int64_t getPPIDof(int64_t pid) {
         return std::stoll(pidstr);
     } catch (std::exception& e) { return 0; }
 #endif
-}
-
-std::expected<int64_t, std::string> configStringToInt(const std::string& VALUE) {
-    auto parseHex = [](const std::string& value) -> std::expected<int64_t, std::string> {
-        try {
-            size_t position;
-            auto   result = stoll(value, &position, 16);
-            if (position == value.size())
-                return result;
-        } catch (const std::exception&) {}
-        return std::unexpected("invalid hex " + value);
-    };
-    if (VALUE.starts_with("0x")) {
-        // Values with 0x are hex
-        return parseHex(VALUE);
-    } else if (VALUE.starts_with("rgba(") && VALUE.ends_with(')')) {
-        const auto VALUEWITHOUTFUNC = trim(VALUE.substr(5, VALUE.length() - 6));
-
-        // try doing it the comma way first
-        if (std::ranges::count(VALUEWITHOUTFUNC, ',') == 3) {
-            // cool
-            std::string rolling = VALUEWITHOUTFUNC;
-            auto        r       = configStringToInt(trim(rolling.substr(0, rolling.find(','))));
-            rolling             = rolling.substr(rolling.find(',') + 1);
-            auto g              = configStringToInt(trim(rolling.substr(0, rolling.find(','))));
-            rolling             = rolling.substr(rolling.find(',') + 1);
-            auto b              = configStringToInt(trim(rolling.substr(0, rolling.find(','))));
-            rolling             = rolling.substr(rolling.find(',') + 1);
-            uint8_t a           = 0;
-
-            if (!r || !g || !b)
-                return std::unexpected("failed parsing " + VALUEWITHOUTFUNC);
-
-            try {
-                a = std::round(std::stof(trim(rolling.substr(0, rolling.find(',')))) * 255.f);
-            } catch (std::exception& e) { return std::unexpected("failed parsing " + VALUEWITHOUTFUNC); }
-
-            return a * sc<Hyprlang::INT>(0x1000000) + *r * sc<Hyprlang::INT>(0x10000) + *g * sc<Hyprlang::INT>(0x100) + *b;
-        } else if (VALUEWITHOUTFUNC.length() == 8) {
-            const auto RGBA = parseHex(VALUEWITHOUTFUNC);
-
-            if (!RGBA)
-                return RGBA;
-            // now we need to RGBA -> ARGB. The config holds ARGB only.
-            return (*RGBA >> 8) + 0x1000000 * (*RGBA & 0xFF);
-        }
-
-        return std::unexpected("rgba() expects length of 8 characters (4 bytes) or 4 comma separated values");
-
-    } else if (VALUE.starts_with("rgb(") && VALUE.ends_with(')')) {
-        const auto VALUEWITHOUTFUNC = trim(VALUE.substr(4, VALUE.length() - 5));
-
-        // try doing it the comma way first
-        if (std::ranges::count(VALUEWITHOUTFUNC, ',') == 2) {
-            // cool
-            std::string rolling = VALUEWITHOUTFUNC;
-            auto        r       = configStringToInt(trim(rolling.substr(0, rolling.find(','))));
-            rolling             = rolling.substr(rolling.find(',') + 1);
-            auto g              = configStringToInt(trim(rolling.substr(0, rolling.find(','))));
-            rolling             = rolling.substr(rolling.find(',') + 1);
-            auto b              = configStringToInt(trim(rolling.substr(0, rolling.find(','))));
-
-            if (!r || !g || !b)
-                return std::unexpected("failed parsing " + VALUEWITHOUTFUNC);
-
-            return sc<Hyprlang::INT>(0xFF000000) + *r * sc<Hyprlang::INT>(0x10000) + *g * sc<Hyprlang::INT>(0x100) + *b;
-        } else if (VALUEWITHOUTFUNC.length() == 6) {
-            auto r = parseHex(VALUEWITHOUTFUNC);
-            return r ? *r + 0xFF000000 : r;
-        }
-
-        return std::unexpected("rgb() expects length of 6 characters (3 bytes) or 3 comma separated values");
-    } else if (VALUE.starts_with("true") || VALUE.starts_with("on") || VALUE.starts_with("yes")) {
-        return 1;
-    } else if (VALUE.starts_with("false") || VALUE.starts_with("off") || VALUE.starts_with("no")) {
-        return 0;
-    }
-
-    if (VALUE.empty() || !isNumber(VALUE, false))
-        return std::unexpected("cannot parse \"" + VALUE + "\" as an int.");
-
-    try {
-        const auto RES = std::stoll(VALUE);
-        return RES;
-    } catch (std::exception& e) { return std::unexpected(std::string{"stoll threw: "} + e.what()); }
-
-    return std::unexpected("parse error");
-}
-
-Vector2D configStringToVector2D(const std::string& VALUE) {
-    std::istringstream iss(VALUE);
-    std::string        token;
-
-    if (!std::getline(iss, token, ' ') && !std::getline(iss, token, ','))
-        throw std::invalid_argument("Invalid string format");
-
-    if (!isNumber(token))
-        throw std::invalid_argument("Invalid x value");
-
-    long long x = std::stoll(token);
-
-    if (!std::getline(iss, token))
-        throw std::invalid_argument("Invalid string format");
-
-    if (!isNumber(token))
-        throw std::invalid_argument("Invalid y value");
-
-    long long y = std::stoll(token);
-
-    if (std::getline(iss, token))
-        throw std::invalid_argument("Invalid string format");
-
-    return Vector2D(sc<double>(x), sc<double>(y));
 }
 
 double normalizeAngleRad(double ang) {
@@ -935,7 +775,7 @@ std::string deviceNameToInternalString(const std::string& in) {
                           case '\n':
                           case ',': return '-';
 
-                          default: return static_cast<char>(std::tolower(ch));
+                          default: return sc<char>(std::tolower(ch));
                       }
                   });
 

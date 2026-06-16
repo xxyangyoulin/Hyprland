@@ -55,6 +55,10 @@ static std::string getTempRoot() {
     return STR;
 }
 
+static bool isValidHash(std::string_view sv) {
+    return std::ranges::all_of(sv, [](const char& c) { return std::isdigit(c) || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'); });
+}
+
 CPluginManager::CPluginManager() {
     if (NSys::isSuperuser())
         Debug::die("Don't run hyprpm as a superuser.");
@@ -274,9 +278,14 @@ bool CPluginManager::addNewPluginRepo(const std::string& url, const std::string&
             if (hl != HLVER.hash)
                 continue;
 
+            if (plugin.contains("'") || !isValidHash(plugin)) {
+                std::println(stderr, "\n{}", failureString("Plugin has a malformed manifest: bad commit pin"));
+                return false;
+            }
+
             progress.printMessageAbove(successString("commit pin {} matched hl, resetting", plugin));
 
-            execAndGet("cd " + m_szWorkingPluginDirectory + " && git reset --hard --recurse-submodules " + plugin);
+            execAndGet("cd " + m_szWorkingPluginDirectory + " && git reset --hard --recurse-submodules '" + plugin + "'");
 
             ret = execAndGet("git -C " + m_szWorkingPluginDirectory + " submodule update --init");
             if (m_bVerbose)
@@ -313,8 +322,10 @@ bool CPluginManager::addNewPluginRepo(const std::string& url, const std::string&
 
         progress.printMessageAbove(infoString("Building {}", p.name));
 
+        const auto env = getPluginBuildEnv();
+
         for (auto const& bs : p.buildSteps) {
-            const auto CMD_RAW = nixDevelopIfNeeded(std::format("cd {} && PKG_CONFIG_PATH=\"{}\" {}", m_szWorkingPluginDirectory, getPkgConfigPath(), bs), HLVER);
+            const auto CMD_RAW = nixDevelopIfNeeded(std::format("cd {} && {} {}", m_szWorkingPluginDirectory, env, bs), HLVER);
 
             if (!CMD_RAW) {
                 progress.printMessageAbove(failureString("Failed to build {}: {}", p.name, CMD_RAW.error()));
@@ -749,9 +760,14 @@ bool CPluginManager::updatePlugins(bool forceUpdateAll) {
                 if (hl != HLVER.hash)
                     continue;
 
+                if (plugin.contains("'") || !isValidHash(plugin)) {
+                    std::println(stderr, "\n{}", failureString("Plugin has a malformed manifest: bad commit pin"));
+                    return false;
+                }
+
                 progress.printMessageAbove(successString("commit pin {} matched hl, resetting", plugin));
 
-                execAndGet("cd " + m_szWorkingPluginDirectory + " && git reset --hard --recurse-submodules " + plugin);
+                execAndGet("cd " + m_szWorkingPluginDirectory + " && git reset --hard --recurse-submodules '" + plugin + "'");
             }
         }
 
@@ -766,8 +782,10 @@ bool CPluginManager::updatePlugins(bool forceUpdateAll) {
 
             progress.printMessageAbove(infoString("Building {}", p.name));
 
+            const auto env = getPluginBuildEnv();
+
             for (auto const& bs : p.buildSteps) {
-                const auto CMD_RAW = nixDevelopIfNeeded(std::format("cd {} && PKG_CONFIG_PATH=\"{}\" {}", m_szWorkingPluginDirectory, getPkgConfigPath(), bs), HLVER);
+                const auto CMD_RAW = nixDevelopIfNeeded(std::format("cd {} && {} {}", m_szWorkingPluginDirectory, env, bs), HLVER);
 
                 if (!CMD_RAW) {
                     progress.printMessageAbove(failureString("Failed to build {}: {}", p.name, CMD_RAW.error()));
@@ -1033,6 +1051,22 @@ bool CPluginManager::hasDeps() {
     }
 
     return hasAllDeps;
+}
+
+std::string CPluginManager::getPluginBuildEnv() {
+    std::string env = std::format("PKG_CONFIG_PATH=\"{}\"", getPkgConfigPath());
+
+#if defined(HYPRPM_EXTRA_CFLAGS)
+    if (std::string_view{HYPRPM_EXTRA_CFLAGS}.size() > 0)
+        env += std::format(" CFLAGS=\"{} $CFLAGS\"", HYPRPM_EXTRA_CFLAGS);
+#endif
+
+#if defined(HYPRPM_EXTRA_CXXFLAGS)
+    if (std::string_view{HYPRPM_EXTRA_CXXFLAGS}.size() > 0)
+        env += std::format(" CXXFLAGS=\"{} $CXXFLAGS\"", HYPRPM_EXTRA_CXXFLAGS);
+#endif
+
+    return env;
 }
 
 const std::string& CPluginManager::getPkgConfigPath() {

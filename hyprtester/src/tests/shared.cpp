@@ -1,4 +1,5 @@
 #include "shared.hpp"
+#include <cassert>
 #include <csignal>
 #include <cerrno>
 #include <thread>
@@ -9,6 +10,10 @@
 
 using namespace Hyprutils::OS;
 using namespace Hyprutils::Memory;
+
+// Almost everywhere `Tests::spawnKitty` is used, the return value is immediately tested against `nullptr`
+// and the test fails if it is. TODO: Add a macro to call `Tests::spawnKitty` from tests that will check it
+// and, on failure, fail the test with a meaningful message.
 
 CUniquePointer<CProcess> Tests::spawnKitty(const std::string& class_, const std::vector<std::string> args) {
     const auto               COUNT_BEFORE = windowCount();
@@ -93,12 +98,17 @@ int Tests::countOccurrences(const std::string& in, const std::string& what) {
     return cnt;
 }
 
+void Tests::sync(int rounds) {
+    for (int i = 0; i < rounds; ++i)
+        getFromSocket("/version");
+}
+
 bool Tests::killAllWindows() {
     auto str = getFromSocket("/clients");
     auto pos = str.find("Window ");
     while (pos != std::string::npos) {
         auto pos2 = str.find(" -> ", pos);
-        getFromSocket("/dispatch killwindow address:0x" + str.substr(pos + 7, pos2 - pos - 7));
+        getFromSocket("/dispatch hl.dsp.window.kill({ window = 'address:0x" + str.substr(pos + 7, pos2 - pos - 7) + "' })");
         pos = str.find("Window ", pos + 5);
     }
 
@@ -182,12 +192,14 @@ bool Tests::writeFile(const std::string& name, const std::string& contents) {
     return true;
 }
 
-std::string Tests::getWindowAttribute(const std::string& winInfo, const std::string& attr) {
-    auto pos = winInfo.find(attr);
+std::string Tests::getAttribute(const std::string& hyprlandResponse, std::string attr) {
+    attr += ": ";
+    auto pos = hyprlandResponse.find(attr);
     if (pos == std::string::npos) {
         NLog::log("{}Window attribute not found: '{}'", Colors::RED, attr);
         return "Wrong window attribute";
     }
-    auto pos2 = winInfo.find('\n', pos);
-    return winInfo.substr(pos, pos2 - pos);
+    pos += attr.size();
+    auto pos2 = hyprlandResponse.find('\n', pos);
+    return hyprlandResponse.substr(pos, pos2 - pos);
 }

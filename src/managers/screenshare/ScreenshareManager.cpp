@@ -3,6 +3,7 @@
 #include "../../Compositor.hpp"
 #include "../../desktop/view/Window.hpp"
 #include "../../protocols/core/Seat.hpp"
+#include "../../state/MonitorState.hpp"
 
 using namespace Screenshare;
 
@@ -44,7 +45,7 @@ void CScreenshareManager::onOutputCommit(PHLMONITOR monitor) {
 }
 
 UP<CScreenshareSession> CScreenshareManager::newSession(wl_client* client, PHLMONITOR monitor) {
-    if UNLIKELY (!monitor || !g_pCompositor->monitorExists(monitor)) {
+    if UNLIKELY (!monitor || !State::monitorState()->contains(monitor)) {
         LOGM(Log::ERR, "Client requested sharing of a monitor that is gone");
         return nullptr;
     }
@@ -58,7 +59,7 @@ UP<CScreenshareSession> CScreenshareManager::newSession(wl_client* client, PHLMO
 }
 
 UP<CScreenshareSession> CScreenshareManager::newSession(wl_client* client, PHLMONITOR monitor, CBox captureRegion) {
-    if UNLIKELY (!monitor || !g_pCompositor->monitorExists(monitor)) {
+    if UNLIKELY (!monitor || !State::monitorState()->contains(monitor)) {
         LOGM(Log::ERR, "Client requested sharing of a monitor that is gone");
         return nullptr;
     }
@@ -140,16 +141,18 @@ WP<CScreenshareSession> CScreenshareManager::getManagedSession(eScreenshareType 
         m_sessions.emplace_back(session);
 
         it = m_managedSessions.emplace(m_managedSessions.end(), makeUnique<SManagedSession>(std::move(session)));
+
+        auto& managed            = *it;
+        managed->stoppedListener = managed->m_session->m_events.stopped.listen([managed = WP<SManagedSession>(managed)]() {
+            if (!managed)
+                return;
+
+            const auto& session = managed->m_session;
+            std::erase_if(Screenshare::mgr()->m_managedSessions, [&session](const auto& s) { return s && s->m_session == session; });
+        });
     }
 
-    auto& session = *it;
-
-    session->stoppedListener = session->m_session->m_events.stopped.listen([session = WP<SManagedSession>(session)]() {
-        if (!session.expired())
-            std::erase_if(Screenshare::mgr()->m_managedSessions, [&](const auto& s) { return s && s->m_session.get() == session->m_session.get(); });
-    });
-
-    return session->m_session;
+    return (*it)->m_session;
 }
 
 bool CScreenshareManager::isOutputBeingSSd(PHLMONITOR monitor) {
@@ -158,6 +161,43 @@ bool CScreenshareManager::isOutputBeingSSd(PHLMONITOR monitor) {
             return false;
         return s->isActive() && (s->m_type == SHARE_MONITOR || s->m_type == SHARE_REGION) && s->m_monitor == monitor;
     });
+}
+
+bool CScreenshareManager::outputNeedsCopyFB(PHLMONITOR monitor) {
+    return outputCopyFBState(monitor).needsCopyFB();
+}
+
+CScreenshareManager::SOutputCopyFBState CScreenshareManager::outputCopyFBState(PHLMONITOR monitor) {
+    SOutputCopyFBState state;
+
+    for (const auto& session : m_sessions) {
+        if (!session || !session->isActive() || (session->m_type != SHARE_MONITOR && session->m_type != SHARE_REGION) || session->m_monitor != monitor)
+            continue;
+
+        state.activeSessions++;
+        if (session->m_sharing)
+            state.sharingSessions++;
+
+        if (session->m_type == SHARE_MONITOR)
+            state.monitorSessions++;
+        else if (session->m_type == SHARE_REGION)
+            state.regionSessions++;
+    }
+
+    for (const auto& frame : m_pendingFrames) {
+        if (!frame || frame->done() || !frame->m_shared || frame->m_session->monitor() != monitor)
+            continue;
+
+        if (frame->m_session->m_type == SHARE_MONITOR) {
+            state.pendingFrames++;
+            state.pendingMonitorFrames++;
+        } else if (frame->m_session->m_type == SHARE_REGION) {
+            state.pendingFrames++;
+            state.pendingRegionFrames++;
+        }
+    }
+
+    return state;
 }
 
 CScreenshareManager::SManagedSession::SManagedSession(UP<CScreenshareSession>&& session) : m_session(std::move(session)) {

@@ -7,6 +7,7 @@
 #include "../../desktop/state/FocusState.hpp"
 #include "../../desktop/view/Group.hpp"
 #include "../../render/Renderer.hpp"
+#include "../../state/MonitorState.hpp"
 
 using namespace Layout;
 using namespace Layout::Supplementary;
@@ -48,7 +49,7 @@ bool CDragStateController::updateDragWindow() {
         const auto PWORKSPACE     = DRAGGINGTARGET->workspace();
         const auto DRAGGINGWINDOW = DRAGGINGTARGET->window();
 
-        if (PWORKSPACE->m_hasFullscreenWindow && (!DRAGGINGTARGET->floating() || (!DRAGGINGWINDOW->m_createdOverFullscreen && !DRAGGINGWINDOW->m_pinned))) {
+        if (PWORKSPACE->m_hasFullscreenWindow && (!DRAGGINGTARGET->floating() || !DRAGGINGWINDOW->isAllowedOverFullscreen())) {
             Log::logger->log(Log::DEBUG, "Rejecting drag on a fullscreen workspace. (window under fullscreen)");
             CKeybindManager::changeMouseBindMode(MBIND_INVALID);
             return true;
@@ -87,7 +88,7 @@ void CDragStateController::dragBegin(SP<ITarget> target, eMouseBindMode mode) {
     m_dragMode = mode;
 
     const auto  DRAGGINGTARGET = m_target.lock();
-    static auto PDRAGTHRESHOLD = CConfigValue<Hyprlang::INT>("binds:drag_threshold");
+    static auto PDRAGTHRESHOLD = CConfigValue<Config::INTEGER>("binds:drag_threshold");
 
     m_mouseMoveEventCount = 1;
     m_beginDragSizeXY     = Vector2D();
@@ -112,7 +113,7 @@ void CDragStateController::dragBegin(SP<ITarget> target, eMouseBindMode mode) {
         return;
 
     // get the grab corner
-    static auto RESIZECORNER = CConfigValue<Hyprlang::INT>("general:resize_corner");
+    static auto RESIZECORNER = CConfigValue<Config::INTEGER>("general:resize_corner");
     if (*RESIZECORNER != 0 && *RESIZECORNER <= 4 && DRAGGINGTARGET->floating()) {
         switch (*RESIZECORNER) {
             case 1:
@@ -193,7 +194,7 @@ void CDragStateController::dragEnd() {
                 return;
 
             const bool  FLOATEDINTOTILED = !pWindow->m_isFloating && !m_draggingTiled;
-            static auto PDRAGINTOGROUP   = CConfigValue<Hyprlang::INT>("group:drag_into_group");
+            static auto PDRAGINTOGROUP   = CConfigValue<Config::INTEGER>("group:drag_into_group");
 
             if (pWindow->m_group && DRAGGING_WINDOW->canBeGroupedInto(pWindow->m_group) && *PDRAGINTOGROUP == 1 && !FLOATEDINTOTILED) {
                 pWindow->m_group->add(DRAGGING_WINDOW);
@@ -201,6 +202,11 @@ void CDragStateController::dragEnd() {
                 draggingTarget = DRAGGING_WINDOW->m_target;
             }
         }
+    }
+
+    if (const auto W = draggingTarget->window(); W) {
+        W->resetMotionBlur();
+        W->m_floatingOffset = {};
     }
 
     if (m_draggingTiled) {
@@ -226,7 +232,7 @@ void CDragStateController::mouseMove(const Vector2D& mousePos) {
         return;
 
     const auto  DRAGGINGTARGET = m_target.lock();
-    static auto PDRAGTHRESHOLD = CConfigValue<Hyprlang::INT>("binds:drag_threshold");
+    static auto PDRAGTHRESHOLD = CConfigValue<Config::INTEGER>("binds:drag_threshold");
 
     // Window invalid or drag begin size 0,0 meaning we rejected it.
     if ((!validMapped(DRAGGINGTARGET->window()) || m_beginDragSizeXY == Vector2D())) {
@@ -248,11 +254,11 @@ void CDragStateController::mouseMove(const Vector2D& mousePos) {
     const auto  DELTA     = Vector2D(mousePos.x - m_beginDragXY.x, mousePos.y - m_beginDragXY.y);
     const auto  TICKDELTA = Vector2D(mousePos.x - m_lastDragXY.x, mousePos.y - m_lastDragXY.y);
 
-    static auto SNAPENABLED = CConfigValue<Hyprlang::INT>("general:snap:enabled");
+    static auto SNAPENABLED = CConfigValue<Config::INTEGER>("general:snap:enabled");
 
     const auto  TIMERDELTA    = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - TIMER).count();
     const auto  MSDELTA       = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - MSTIMER).count();
-    const auto  MSMONITOR     = 1000.0 / g_pHyprRenderer->m_mostHzMonitor->m_refreshRate;
+    const auto  MSMONITOR     = 1000.0 / (g_pHyprRenderer->m_mostHzMonitor ? g_pHyprRenderer->m_mostHzMonitor->m_refreshRate : 60.0);
     static int  totalMs       = 0;
     bool        canSkipUpdate = true;
 
@@ -277,6 +283,13 @@ void CDragStateController::mouseMove(const Vector2D& mousePos) {
     m_lastDragXY = mousePos;
 
     DRAGGINGTARGET->damageEntire();
+
+    const auto MOTIONWINDOW = DRAGGINGTARGET->window();
+    const bool TRACKMOTION  = validMapped(MOTIONWINDOW);
+    CBox       previousFull;
+
+    if (TRACKMOTION)
+        previousFull = MOTIONWINDOW->getFullWindowBoundingBox();
 
     if (m_dragMode == MBIND_MOVE) {
 
@@ -357,11 +370,14 @@ void CDragStateController::mouseMove(const Vector2D& mousePos) {
         }
     }
 
+    if (TRACKMOTION)
+        MOTIONWINDOW->recordMotionBlur(previousFull, MOTIONWINDOW->getFullWindowBoundingBox());
+
     // get middle point
     Vector2D middle = DRAGGINGTARGET->position().middle();
 
     // and check its monitor
-    const auto PMONITOR = g_pCompositor->getMonitorFromVector(middle);
+    const auto PMONITOR = State::monitorState()->query().vec(middle).run();
 
     if (PMONITOR && PMONITOR->m_activeWorkspace && DRAGGINGTARGET->floating() /* If we're resaizing a tiled target, don't do this */) {
         const auto WS = PMONITOR->m_activeSpecialWorkspace ? PMONITOR->m_activeSpecialWorkspace : PMONITOR->m_activeWorkspace;

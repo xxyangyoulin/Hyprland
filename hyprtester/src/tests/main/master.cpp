@@ -1,13 +1,53 @@
 #include "../shared.hpp"
 #include "../../shared.hpp"
 #include "../../hyprctlCompat.hpp"
+#include <algorithm>
+#include <cmath>
+#include <string>
+#include <utility>
+#include <vector>
+#include <thread>
 #include "tests.hpp"
 
-static int ret = 0;
+TEST_CASE(focusMasterPrevious) {
+    OK(getFromSocket("r/eval hl.config({ general = { layout = 'master' } })"));
 
-// reqs 1 master 3 slaves
-static void testOrientations() {
-    OK(getFromSocket("/keyword master:orientation top"));
+    // setup
+    NLog::log("{}Spawning 1 master and 3 slave windows", Colors::YELLOW);
+    // order of windows set according to new_status = master (set in test.lua)
+    for (auto const& win : {"slave1", "slave2", "slave3", "master"}) {
+        if (!Tests::spawnKitty(win)) {
+            FAIL_TEST("Could not spawn kitty with win class `{}`", win);
+        }
+    }
+    NLog::log("{}Ensuring focus is on master before testing", Colors::YELLOW);
+    OK(getFromSocket("/dispatch hl.dsp.layout('focusmaster master')"));
+    ASSERT_CONTAINS(getFromSocket("/activewindow"), "class: master");
+
+    // test
+    NLog::log("{}Testing fallback to focusmaster auto", Colors::YELLOW);
+
+    OK(getFromSocket("/dispatch hl.dsp.layout('focusmaster previous')"));
+    ASSERT_CONTAINS(getFromSocket("/activewindow"), "class: slave1");
+
+    NLog::log("{}Testing focusing from slave to master", Colors::YELLOW);
+
+    OK(getFromSocket("/dispatch hl.dsp.layout('cyclenext noloop')"));
+    ASSERT_CONTAINS(getFromSocket("/activewindow"), "class: slave2");
+    OK(getFromSocket("/dispatch hl.dsp.layout('focusmaster previous')"));
+    ASSERT_CONTAINS(getFromSocket("/activewindow"), "class: master");
+
+    NLog::log("{}Testing focusing on previous window", Colors::YELLOW);
+
+    OK(getFromSocket("/dispatch hl.dsp.layout('focusmaster previous')"));
+    ASSERT_CONTAINS(getFromSocket("/activewindow"), "class: slave2");
+
+    NLog::log("{}Testing focusing back to master", Colors::YELLOW);
+
+    OK(getFromSocket("/dispatch hl.dsp.layout('focusmaster previous')"));
+    ASSERT_CONTAINS(getFromSocket("/activewindow"), "class: master");
+
+    OK(getFromSocket("r/eval hl.config({ master = { orientation = 'top' } })"));
 
     // top
     {
@@ -19,7 +59,7 @@ static void testOrientations() {
     // cycle = top, right, bottom, center, left
 
     // right
-    OK(getFromSocket("/dispatch layoutmsg orientationnext"));
+    OK(getFromSocket("/dispatch hl.dsp.layout('orientationnext')"));
     {
         auto str = getFromSocket("/activewindow");
         EXPECT_CONTAINS(str, "at: 873,22");
@@ -27,7 +67,7 @@ static void testOrientations() {
     }
 
     // bottom
-    OK(getFromSocket("/dispatch layoutmsg orientationnext"));
+    OK(getFromSocket("/dispatch hl.dsp.layout('orientationnext')"));
     {
         auto str = getFromSocket("/activewindow");
         EXPECT_CONTAINS(str, "at: 22,495");
@@ -35,7 +75,7 @@ static void testOrientations() {
     }
 
     // center
-    OK(getFromSocket("/dispatch layoutmsg orientationnext"));
+    OK(getFromSocket("/dispatch hl.dsp.layout('orientationnext')"));
     {
         auto str = getFromSocket("/activewindow");
         EXPECT_CONTAINS(str, "at: 450,22");
@@ -43,7 +83,7 @@ static void testOrientations() {
     }
 
     // left
-    OK(getFromSocket("/dispatch layoutmsg orientationnext"));
+    OK(getFromSocket("/dispatch hl.dsp.layout('orientationnext')"));
     {
         auto str = getFromSocket("/activewindow");
         EXPECT_CONTAINS(str, "at: 22,22");
@@ -51,67 +91,20 @@ static void testOrientations() {
     }
 }
 
-static void focusMasterPrevious() {
-    // setup
-    NLog::log("{}Spawning 1 master and 3 slave windows", Colors::YELLOW);
-    // order of windows set according to new_status = master (set in test.conf)
-    for (auto const& win : {"slave1", "slave2", "slave3", "master"}) {
-        if (!Tests::spawnKitty(win)) {
-            NLog::log("{}Failed to spawn kitty with win class `{}`", Colors::RED, win);
-            ++TESTS_FAILED;
-            ret = 1;
-            return;
-        }
-    }
-    NLog::log("{}Ensuring focus is on master before testing", Colors::YELLOW);
-    OK(getFromSocket("/dispatch layoutmsg focusmaster master"));
-    EXPECT_CONTAINS(getFromSocket("/activewindow"), "class: master");
-
-    // test
-    NLog::log("{}Testing fallback to focusmaster auto", Colors::YELLOW);
-
-    OK(getFromSocket("/dispatch layoutmsg focusmaster previous"));
-    EXPECT_CONTAINS(getFromSocket("/activewindow"), "class: slave1");
-
-    NLog::log("{}Testing focusing from slave to master", Colors::YELLOW);
-
-    OK(getFromSocket("/dispatch layoutmsg cyclenext noloop"));
-    EXPECT_CONTAINS(getFromSocket("/activewindow"), "class: slave2");
-    OK(getFromSocket("/dispatch layoutmsg focusmaster previous"));
-    EXPECT_CONTAINS(getFromSocket("/activewindow"), "class: master");
-
-    NLog::log("{}Testing focusing on previous window", Colors::YELLOW);
-
-    OK(getFromSocket("/dispatch layoutmsg focusmaster previous"));
-    EXPECT_CONTAINS(getFromSocket("/activewindow"), "class: slave2");
-
-    NLog::log("{}Testing focusing back to master", Colors::YELLOW);
-
-    OK(getFromSocket("/dispatch layoutmsg focusmaster previous"));
-    EXPECT_CONTAINS(getFromSocket("/activewindow"), "class: master");
-
-    testOrientations();
-
-    // clean up
-    NLog::log("{}Killing all windows", Colors::YELLOW);
-    Tests::killAllWindows();
-}
-
-static void testFsBehavior() {
+TEST_CASE(fsBehavior) {
     // Master will re-send data to fullscreen / maximized windows, which can interfere with misc:on_focus_under_fullscreen
     // check that it doesn't.
 
+    OK(getFromSocket("r/eval hl.config({ general = { layout = 'master' } })"));
+
     for (auto const& win : {"master", "slave1", "slave2"}) {
         if (!Tests::spawnKitty(win)) {
-            NLog::log("{}Failed to spawn kitty with win class `{}`", Colors::RED, win);
-            ++TESTS_FAILED;
-            ret = 1;
-            return;
+            FAIL_TEST("Could not spawn kitty with win class `{}`", win);
         }
     }
 
-    OK(getFromSocket("/dispatch focuswindow class:master"));
-    OK(getFromSocket("/dispatch fullscreen 1"));
+    OK(getFromSocket("/dispatch hl.dsp.focus({ window = 'class:master' })"));
+    OK(getFromSocket("/dispatch hl.dsp.window.fullscreen({ mode = 'maximized' })"));
 
     {
         auto str = getFromSocket("/activewindow");
@@ -120,7 +113,7 @@ static void testFsBehavior() {
         EXPECT_CONTAINS(str, "class: master");
     }
 
-    OK(getFromSocket("/keyword misc:on_focus_under_fullscreen 1"));
+    OK(getFromSocket("/eval hl.config({ misc = { on_focus_under_fullscreen = 1 } })"));
 
     Tests::spawnKitty("new_master");
 
@@ -132,7 +125,7 @@ static void testFsBehavior() {
         EXPECT_CONTAINS(str, "fullscreen: 1");
     }
 
-    OK(getFromSocket("/keyword misc:on_focus_under_fullscreen 0"));
+    OK(getFromSocket("/eval hl.config({ misc = { on_focus_under_fullscreen = 0 } })"));
 
     Tests::spawnKitty("ignored");
 
@@ -144,7 +137,7 @@ static void testFsBehavior() {
         EXPECT_CONTAINS(str, "fullscreen: 1");
     }
 
-    OK(getFromSocket("/keyword misc:on_focus_under_fullscreen 2"));
+    OK(getFromSocket("/eval hl.config({ misc = { on_focus_under_fullscreen = 2 } })"));
 
     Tests::spawnKitty("vaxwashere");
 
@@ -153,31 +146,187 @@ static void testFsBehavior() {
         EXPECT_CONTAINS(str, "class: vaxwashere");
         EXPECT_CONTAINS(str, "fullscreen: 0");
     }
-
-    NLog::log("{}Killing all windows", Colors::YELLOW);
-    Tests::killAllWindows();
 }
 
-static bool test() {
-    NLog::log("{}Testing Master layout", Colors::GREEN);
+TEST_CASE(rollFocus) {
+    // test rollnext/rollprev dispatchers
 
-    // setup
-    OK(getFromSocket("/dispatch workspace name:master"));
-    OK(getFromSocket("/keyword general:layout master"));
+    OK(getFromSocket("r/eval hl.config({ general = { layout = 'master' } })"));
 
-    // test
-    NLog::log("{}Testing `focusmaster previous` layoutmsg", Colors::GREEN);
-    focusMasterPrevious();
+    // set up windows
+    std::vector<std::string> windows = {"slave1", "slave2", "slave3", "master"};
 
-    NLog::log("{}Testing fs behavior", Colors::GREEN);
-    testFsBehavior();
+    // helper lambda thing
+    auto roll = [&](const std::string& dir) {
+        auto pivot = (dir == "rollnext") ? windows.begin() + 1 : windows.end() - 1;
 
-    // clean up
-    NLog::log("Cleaning up", Colors::YELLOW);
-    OK(getFromSocket("/dispatch workspace 1"));
-    OK(getFromSocket("/reload"));
+        // rotate the windows vector along with the actual windows
+        // the rolling behavior of the window focus should follow the
+        // rotating behavior of std::ranges::rotate
+        OK(getFromSocket("/dispatch hl.dsp.layout('" + dir + "')"));
+        std::ranges::rotate(windows.begin(), pivot, windows.end());
+        ASSERT_CONTAINS(getFromSocket("/activewindow"), "class: " + windows.back());
+    };
 
-    return !ret;
+    for (auto const& win : windows) {
+        if (!Tests::spawnKitty(win)) {
+            FAIL_TEST("Could not spawn kitty with win class `{}`", win);
+        }
+    }
+
+    // focus master
+    OK(getFromSocket("/dispatch hl.dsp.layout('focusmaster master')"));
+    ASSERT_CONTAINS(getFromSocket("/activewindow"), "class: master");
+
+    // put the windows in the washing machine
+    NLog::log("{}Testing rollnext", Colors::YELLOW);
+    for (int i = 0; i < 20; ++i) {
+        roll("rollnext");
+    }
+
+    NLog::log("{}Testing rollprev", Colors::YELLOW);
+    for (int i = 0; i < 20; ++i) {
+        roll("rollprev");
+    }
+
+    NLog::log("{}Testing rollnext with rollprev", Colors::YELLOW);
+    for (int i = 0; i < 10; ++i) {
+        for (int j = 0; j < 5; ++j) {
+            roll("rollnext");
+        }
+        roll("rollprev");
+    }
+
+    NLog::log("{}Testing rollnext/rollprev alternation", Colors::YELLOW);
+    for (int i = 0; i < 20; ++i) {
+        if (i % 2 == 0) {
+            roll("rollnext");
+        } else {
+            roll("rollprev");
+        }
+    }
+
+    NLog::log("{}Testing rollnext/rollprev burst calls", Colors::YELLOW);
+    for (int i = 0; i < 20; ++i) {
+        if (i / 5 % 2 == 0) {
+            roll("rollnext");
+        } else {
+            roll("rollprev");
+        }
+    }
 }
 
-REGISTER_TEST_FN(test);
+TEST_CASE(focusMasterClose) {
+    //Test behaviour of master:focus_master_on_close
+    OK(getFromSocket("r/eval hl.config({ general = { layout = 'master' }, master = { focus_master_on_close = true } })"));
+
+    std::vector<pid_t> pids;
+    for (auto const& win : {"slave1", "slave2", "slave3", "master"}) {
+        auto p = Tests::spawnKitty(win);
+        if (!p)
+            FAIL_TEST("Could not spawn kitty with win class `{}`", win);
+        pids.push_back(p->pid());
+    }
+
+    OK(getFromSocket("/dispatch hl.dsp.focus({ window = 'class:slave1' })"));
+    OK(getFromSocket("/dispatch hl.dsp.window.close({ window = 'class:slave1' })"));
+    while (Tests::processAlive(pids[0]))
+        std::this_thread::sleep_for(std::chrono::milliseconds(25l));
+    ASSERT_CONTAINS(getFromSocket("/activewindow"), "class: master");
+
+    OK(getFromSocket("/dispatch hl.dsp.focus({ window = 'class:slave2' })"));
+    OK(getFromSocket("/dispatch hl.dsp.window.close({ window = 'class:slave2' })"));
+    while (Tests::processAlive(pids[1]))
+        std::this_thread::sleep_for(std::chrono::milliseconds(25l));
+    ASSERT_CONTAINS(getFromSocket("/activewindow"), "class: master");
+
+    OK(getFromSocket("/dispatch hl.dsp.focus({ window = 'class:slave3' })"));
+    OK(getFromSocket("/dispatch hl.dsp.window.close({ window = 'class:slave3' })"));
+    while (Tests::processAlive(pids[2]))
+        std::this_thread::sleep_for(std::chrono::milliseconds(25l));
+    ASSERT_CONTAINS(getFromSocket("/activewindow"), "class: master");
+}
+
+TEST_CASE(centerMasterColumnResize) {
+    // Center master, odd slave count. The fallback-side column holds the extra slave;
+    // resizeTarget() used to assume it went right, so with the default 'left' fallback the two left
+    // windows of a 1-master/3-slave layout silently refused to resize vertically.
+
+    // focus a window by class and read its {left edge x, height} from /activewindow
+    auto geomOf = [&](const std::string& cls) -> std::pair<double, double> {
+        getFromSocket("/dispatch hl.dsp.focus({ window = 'class:" + cls + "' })");
+        const auto STR = getFromSocket("/activewindow");
+        const auto AT  = Tests::getAttribute(STR, "at");   // "x,y"
+        const auto SZ  = Tests::getAttribute(STR, "size"); // "w,h"
+        return {std::stod(AT.substr(0, AT.find(','))), std::stod(SZ.substr(SZ.find(',') + 1))};
+    };
+    auto leftOf   = [&](const std::string& cls) { return geomOf(cls).first; };
+    auto heightOf = [&](const std::string& cls) { return geomOf(cls).second; };
+
+    // resizeactive-style relative resize of a specific window along y
+    auto resizeY = [&](const std::string& cls, int dy) {
+        return getFromSocket("/dispatch hl.dsp.window.resize({ x = 0, y = " + std::to_string(dy) + ", relative = true, window = 'class:" + cls + "' })");
+    };
+
+    // `top` and `bottom` share one column and must resize vertically (one grows, the other shrinks,
+    // total column height preserved); `single` lives in the other column and must stay untouched.
+    auto expectColumnResizes = [&](const std::string& top, const std::string& bottom, const std::string& single) {
+        const double TX = leftOf(top), BX = leftOf(bottom), SX = leftOf(single);
+        ASSERT_MAX_DELTA(BX, TX, 1);           // top & bottom share a column (same left edge)
+        ASSERT(std::abs(SX - TX) > 100, true); // single sits in the other column
+
+        const double T0 = heightOf(top), B0 = heightOf(bottom), S0 = heightOf(single);
+
+        OK(resizeY(top, 80)); // grow the upper window of the pair
+
+        const double T1 = heightOf(top), B1 = heightOf(bottom), S1 = heightOf(single);
+        EXPECT(T1 > T0, true);                 // upper window grew
+        EXPECT(B1 < B0, true);                 // lower window shrank to compensate
+        EXPECT_MAX_DELTA(T1 + B1, T0 + B0, 4); // column height preserved
+        EXPECT_MAX_DELTA(S1, S0, 2);           // the other column is untouched
+
+        OK(resizeY(top, -80)); // restore the split for later phases
+    };
+
+    // 1 master + 3 slaves => slaves slave1, slave2, slave3 in stack order (new_status = master)
+    OK(getFromSocket(
+        "r/eval hl.config({ general = { layout = 'master' }, master = { orientation = 'center', center_master_fallback = 'left', slave_count_for_center_master = 2 } })"));
+    for (auto const& win : {"slave1", "slave2", "slave3", "master"}) {
+        if (!Tests::spawnKitty(win))
+            FAIL_TEST("Could not spawn kitty with win class `{}`", win);
+    }
+
+    // default `left` fallback: slave1 (top) + slave3 (bottom) on the left, slave2 alone on the right
+    NLog::log("{}center master, left fallback, 3 slaves: left column must resize (smart_resizing on)", Colors::YELLOW);
+    expectColumnResizes("slave1", "slave3", "slave2");
+
+    NLog::log("{}center master, left fallback, 3 slaves: left column must resize (smart_resizing off)", Colors::YELLOW);
+    OK(getFromSocket("r/eval hl.config({ master = { smart_resizing = false } })"));
+    expectColumnResizes("slave1", "slave3", "slave2");
+    OK(getFromSocket("r/eval hl.config({ master = { smart_resizing = true } })"));
+
+    // symmetry: `right` fallback puts the pair (slave1, slave3) on the right, slave2 alone on the left
+    NLog::log("{}center master, right fallback, 3 slaves: right column must resize", Colors::YELLOW);
+    OK(getFromSocket("r/eval hl.config({ master = { center_master_fallback = 'right' } })"));
+    expectColumnResizes("slave1", "slave3", "slave2");
+
+    // even count, no regression: a 4th slave makes 2 left / 2 right; the left pair still resizes.
+    // new_status = master => `extra` becomes the master and `master` drops to the 4th slave.
+    NLog::log("{}center master, left fallback, 4 slaves: columns still resize (no regression)", Colors::YELLOW);
+    OK(getFromSocket("r/eval hl.config({ master = { center_master_fallback = 'left' } })"));
+    if (!Tests::spawnKitty("extra"))
+        FAIL_TEST("Could not spawn kitty with win class `{}`", "extra");
+    expectColumnResizes("slave1", "slave3", "slave2");
+
+    // even count, no regression: 2 slaves => 1 per column, so a vertical resize is a no-op
+    NLog::log("{}center master, 2 slaves: single-window columns don't resize (no regression)", Colors::YELLOW);
+    if (!Tests::killAllWindows())
+        FAIL_TEST("Could not kill all windows before the {}-slave phase", 2);
+    for (auto const& win : {"slave1", "slave2", "master"}) {
+        if (!Tests::spawnKitty(win))
+            FAIL_TEST("Could not spawn kitty with win class `{}`", win);
+    }
+    const double H0 = heightOf("slave1");
+    OK(resizeY("slave1", 80));
+    EXPECT_MAX_DELTA(heightOf("slave1"), H0, 2);
+}

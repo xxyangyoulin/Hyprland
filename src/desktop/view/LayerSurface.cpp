@@ -8,10 +8,11 @@
 #include "../../managers/animation/DesktopAnimationManager.hpp"
 #include "../../render/Renderer.hpp"
 #include "../../config/shared/animation/AnimationTree.hpp"
-#include "../../helpers/Monitor.hpp"
+#include "../../output/Monitor.hpp"
 #include "../../managers/input/InputManager.hpp"
 #include "../../managers/EventManager.hpp"
 #include "../../event/EventBus.hpp"
+#include "../../state/MonitorState.hpp"
 
 using namespace Desktop;
 using namespace Desktop::View;
@@ -19,7 +20,7 @@ using namespace Desktop::View;
 PHLLS CLayerSurface::create(SP<CLayerShellResource> resource) {
     PHLLS pLS = SP<CLayerSurface>(new CLayerSurface(resource));
 
-    auto  pMonitor = resource->m_monitor.empty() ? Desktop::focusState()->monitor() : g_pCompositor->getMonitorFromName(resource->m_monitor);
+    auto  pMonitor = resource->m_monitor.empty() ? Desktop::focusState()->monitor() : State::monitorState()->query().name(resource->m_monitor).run();
 
     pLS->m_wlSurface->assign(resource->m_surface.lock(), pLS);
 
@@ -45,7 +46,7 @@ PHLLS CLayerSurface::create(SP<CLayerShellResource> resource) {
     }
 
     if (pMonitor->m_mirrorOf)
-        pMonitor = g_pCompositor->m_monitors.front();
+        pMonitor = State::monitorState()->monitors().front();
 
     pLS->m_monitor = pMonitor;
     pMonitor->m_layerSurfaceLayers[resource->m_current.layer].emplace_back(pLS);
@@ -80,7 +81,7 @@ CLayerSurface::~CLayerSurface() {
     if (m_wlSurface)
         m_wlSurface->unassign();
 
-    for (auto const& mon : g_pCompositor->m_realMonitors) {
+    for (auto const& mon : State::monitorState()->allMonitors()) {
         for (auto& lsl : mon->m_layerSurfaceLayers) {
             std::erase_if(lsl, [this](auto& ls) { return ls.expired() || ls.get() == this; });
         }
@@ -219,8 +220,7 @@ void CLayerSurface::onMap() {
     g_pEventManager->postEvent(SHyprIPCEvent{.event = "openlayer", .data = m_namespace});
     Event::bus()->m_events.layer.opened.emit(m_self.lock());
 
-    g_pCompositor->setPreferredScaleForSurface(m_wlSurface->resource(), PMONITOR->m_scale);
-    g_pCompositor->setPreferredTransformForSurface(m_wlSurface->resource(), PMONITOR->m_transform);
+    updateSurfaceScaleTransformDetails();
 }
 
 void CLayerSurface::onUnmap() {
@@ -231,7 +231,7 @@ void CLayerSurface::onUnmap() {
 
     std::erase_if(g_pInputManager->m_exclusiveLSes, [this](const auto& other) { return !other || other == m_self; });
 
-    if (!m_monitor || g_pCompositor->m_unsafeState) {
+    if (!m_monitor) {
         Log::logger->log(Log::WARN, "Layersurface unmapping on invalid monitor (removed?) ignoring.");
 
         g_pCompositor->addToFadingOutSafe(m_self.lock());
@@ -414,8 +414,7 @@ void CLayerSurface::onCommit() {
 
     g_pHyprRenderer->damageSurface(m_wlSurface->resource(), m_position.x, m_position.y);
 
-    g_pCompositor->setPreferredScaleForSurface(m_wlSurface->resource(), PMONITOR->m_scale);
-    g_pCompositor->setPreferredTransformForSurface(m_wlSurface->resource(), PMONITOR->m_transform);
+    updateSurfaceScaleTransformDetails();
 }
 
 bool CLayerSurface::isFadedOut() {
@@ -446,4 +445,30 @@ pid_t CLayerSurface::getPID() {
     wl_client_get_credentials(m_layerSurface->m_surface->getResource()->client(), &PID, nullptr, nullptr);
 
     return PID;
+}
+
+void CLayerSurface::updateSurfaceScaleTransformDetails() {
+    if (!aliveAndVisible())
+        return;
+
+    const auto PMONITOR = m_monitor.lock();
+
+    if (!PMONITOR)
+        return;
+
+    auto surf = m_layerSurface->m_surface.lock();
+
+    if (!surf)
+        return;
+
+    surf->breadthfirst(
+        [PMONITOR](SP<CWLSurfaceResource> s, const Vector2D& offset, void* d) {
+            const auto PSURFACE = CWLSurface::fromResource(s);
+            if (PSURFACE && PSURFACE->m_lastScaleFloat == PMONITOR->m_scale)
+                return;
+
+            g_pCompositor->setPreferredScaleForSurface(s, PMONITOR->m_scale);
+            g_pCompositor->setPreferredTransformForSurface(s, PMONITOR->m_transform);
+        },
+        nullptr);
 }

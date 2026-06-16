@@ -128,7 +128,7 @@ TEST(Config, monitorParserTransformValid) {
     for (int i = 0; i <= 7; i++) {
         CMonitorRuleParser parser("DP-1");
         EXPECT_TRUE(parser.parseTransform(std::to_string(i)));
-        EXPECT_EQ(parser.rule().m_transform, static_cast<wl_output_transform>(i));
+        EXPECT_EQ(parser.rule().m_transform, sc<wl_output_transform>(i));
     }
 }
 
@@ -179,6 +179,11 @@ TEST(Config, monitorParserVRR) {
     CMonitorRuleParser p3("DP-1");
     EXPECT_FALSE(p3.parseVRR("abc"));
     EXPECT_TRUE(p3.getError().has_value());
+
+    // -1 clears the per-monitor override so the monitor follows misc:vrr again
+    CMonitorRuleParser p4("DP-1");
+    EXPECT_TRUE(p4.parseVRR("-1"));
+    EXPECT_FALSE(p4.rule().m_vrr.has_value());
 }
 
 TEST(Config, monitorParserSDRBrightness) {

@@ -8,6 +8,7 @@
      - wl_callback
 */
 
+#include <span>
 #include <vector>
 #include <queue>
 #include <cstdint>
@@ -25,7 +26,6 @@
 #include "../types/SurfaceState.hpp"
 
 class CWLOutputResource;
-class CMonitor;
 class CWLSurfaceResource;
 class CWLSubsurfaceResource;
 class CViewportResource;
@@ -99,8 +99,8 @@ class CWLSurfaceResource {
         CSignalT<>                          unmap;
         CSignalT<SP<CWLSubsurfaceResource>> newSubsurface;
         CSignalT<>                          destroy;
-        CSignalT<SP<CMonitor>>              enter;
-        CSignalT<SP<CMonitor>>              leave;
+        CSignalT<PHLMONITOR>                enter;
+        CSignalT<PHLMONITOR>                leave;
     } m_events;
 
     SSurfaceState                          m_current;
@@ -124,6 +124,7 @@ class CWLSurfaceResource {
     SP<CWLSurfaceResource>                 findWithCM();
     void                                   presentFeedback(const Time::steady_tp& when, PHLMONITOR pMonitor, bool discarded = false);
     void                                   scheduleState(WP<SSurfaceState> state);
+    void                                   drainSyncFds(WP<SSurfaceState> state, eLockReason reason);
     void                                   commitState(SSurfaceState& state);
     NColorManagement::PImageDescription    getPreferredImageDescription();
     void                                   sortSubsurfaces();
@@ -142,7 +143,7 @@ class CWLSurfaceResource {
     void                   releaseBuffers(bool onlyCurrent = true);
     void                   dropPendingBuffer();
     void                   dropCurrentBuffer();
-    void                   bfHelper(std::vector<SP<CWLSurfaceResource>> const& nodes, std::function<void(SP<CWLSurfaceResource>, const Vector2D&, void*)> fn, void* data);
+    void                   bfHelper(std::span<const SP<CWLSurfaceResource>> nodes, std::function<void(SP<CWLSurfaceResource>, const Vector2D&, void*)> fn, void* data);
     SP<CWLSurfaceResource> findFirstPreorderHelper(SP<CWLSurfaceResource> root, std::function<bool(SP<CWLSurfaceResource>)> fn);
     void                   updateCursorShm(CRegion damage = CBox{0, 0, INT16_MAX, INT16_MAX});
 

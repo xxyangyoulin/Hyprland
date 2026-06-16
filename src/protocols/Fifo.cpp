@@ -1,8 +1,9 @@
 #include "Fifo.hpp"
 #include "Compositor.hpp"
 #include "core/Compositor.hpp"
-#include "../helpers/Monitor.hpp"
+#include "../output/Monitor.hpp"
 #include "../event/EventBus.hpp"
+#include "../state/MonitorState.hpp"
 
 CFifoResource::CFifoResource(UP<CWpFifoV1>&& resource_, SP<CWLSurfaceResource> surface) : m_resource(std::move(resource_)), m_surface(surface) {
     if UNLIKELY (!m_resource->resource())
@@ -30,7 +31,7 @@ CFifoResource::CFifoResource(UP<CWpFifoV1>&& resource_, SP<CWLSurfaceResource> s
 
         if (!m_surface->m_current.barrierSet) {
             // that might mean an empty commit with a barrier_set alone
-            static const auto PPEND = CConfigValue<Hyprlang::INT>("debug:fifo_pending_workaround");
+            static const auto PPEND = CConfigValue<Config::INTEGER>("debug:fifo_pending_workaround");
             if (!m_surface->m_pending.fifoScheduled)
                 m_surface->m_pending.fifoScheduled = checkMonitors(*PPEND);
 
@@ -44,7 +45,7 @@ CFifoResource::CFifoResource(UP<CWpFifoV1>&& resource_, SP<CWLSurfaceResource> s
         if (!state || !state->surfaceLocked)
             return;
 
-        static const auto PPEND = CConfigValue<Hyprlang::INT>("debug:fifo_pending_workaround");
+        static const auto PPEND = CConfigValue<Config::INTEGER>("debug:fifo_pending_workaround");
 
         //#TODO:
         // this feels wrong, but if we have no pending frames, presented might never come because
@@ -77,7 +78,7 @@ void CFifoResource::presented() {
 
 bool CFifoResource::checkMonitors(bool needsSchedule) {
     if (m_surface->m_enteredOutputs.empty() && m_surface->m_hlSurface) {
-        for (auto& m : g_pCompositor->m_monitors) {
+        for (auto& m : State::monitorState()->monitors()) {
             if (!m || !m->m_enabled)
                 continue;
 
@@ -87,7 +88,7 @@ bool CFifoResource::checkMonitors(bool needsSchedule) {
                     return false; // dont fifo lock on tearing.
 
                 if (needsSchedule)
-                    g_pCompositor->scheduleFrameForMonitor(m, Aquamarine::IOutput::AQ_SCHEDULE_NEEDS_FRAME);
+                    m->scheduleFrame(Aquamarine::IOutput::AQ_SCHEDULE_NEEDS_FRAME);
             }
         }
     } else {
@@ -99,7 +100,7 @@ bool CFifoResource::checkMonitors(bool needsSchedule) {
                 return false; // dont fifo lock on tearing.
 
             if (needsSchedule)
-                g_pCompositor->scheduleFrameForMonitor(m.lock(), Aquamarine::IOutput::AQ_SCHEDULE_NEEDS_FRAME);
+                m->scheduleFrame(Aquamarine::IOutput::AQ_SCHEDULE_NEEDS_FRAME);
         }
     }
 

@@ -124,24 +124,25 @@ bool CGLFramebuffer::readPixels(CHLBufferReference buffer, uint32_t offsetX, uin
 
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
 
-    uint32_t packStride = minStride(PFORMAT, m_size.x);
-    int      glFormat   = PFORMAT->glFormat;
+    uint32_t    packStride = minStride(PFORMAT, m_size.x);
+    int         glFormat   = PFORMAT->glFormat;
 
-    if (glFormat == GL_RGBA)
-        glFormat = GL_BGRA_EXT;
+    static auto stripSwizzleAlpha = [](std::array<GLint, 4> arr) {
+        arr[3] = GL_ONE;
+        return arr;
+    };
 
-    if (glFormat != GL_BGRA_EXT && glFormat != GL_RGB) {
-        if (PFORMAT->swizzle.has_value()) {
-            if (PFORMAT->swizzle == SWIZZLE_RGBA)
-                glFormat = GL_RGBA;
-            else if (PFORMAT->swizzle == SWIZZLE_BGRA)
-                glFormat = GL_BGRA_EXT;
-            else {
-                LOGM(Log::ERR, "Copied frame via shm might be broken or color flipped");
-                glFormat = GL_RGBA;
-            }
+    if (PFORMAT->swizzle.has_value()) {
+        if (stripSwizzleAlpha(*PFORMAT->swizzle) == stripSwizzleAlpha(SWIZZLE_RGBA))
+            glFormat = GL_RGBA;
+        else if (stripSwizzleAlpha(*PFORMAT->swizzle) == stripSwizzleAlpha(SWIZZLE_BGRA))
+            glFormat = GL_BGRA_EXT;
+        else {
+            LOGM(Log::ERR, "Copied frame via shm might be broken or color flipped");
+            glFormat = GL_RGBA;
         }
-    }
+    } else if (glFormat == GL_RGBA)
+        glFormat = GL_BGRA_EXT;
 
     // This could be optimized by using a pixel buffer object to make this async,
     // but really clients should just use a dma buffer anyways.
@@ -175,4 +176,15 @@ void CGLFramebuffer::invalidate(const std::vector<GLenum>& attachments) {
         return;
 
     glInvalidateFramebuffer(GL_FRAMEBUFFER, attachments.size(), attachments.data());
+    m_cleared = false;
+}
+
+void CGLFramebuffer::clearAfterInvalidation() {
+    if (m_cleared)
+        return;
+
+    m_cleared = true;
+    glClearColor(0, 0, 0, 0);
+    g_pHyprOpenGL->scissor(nullptr);
+    glClear(GL_COLOR_BUFFER_BIT);
 }

@@ -3,8 +3,9 @@
 #include "../config/ConfigValue.hpp"
 #include "PointerManager.hpp"
 #include "../xwayland/XWayland.hpp"
-#include "../helpers/Monitor.hpp"
+#include "../output/Monitor.hpp"
 #include "../event/EventBus.hpp"
+#include "../state/MonitorState.hpp"
 
 static int cursorAnimTimer(SP<CEventLoopTimer> self, void* data) {
     const auto cursorMgr = sc<CCursorManager*>(data);
@@ -71,7 +72,7 @@ void CCursorBuffer::endDataPtr() {
 CCursorManager::CCursorManager() {
     m_hyprcursor               = makeUnique<Hyprcursor::CHyprcursorManager>(m_theme.empty() ? nullptr : m_theme.c_str(), hcLogger);
     m_xcursor                  = makeUnique<CXCursorManager>();
-    static auto PUSEHYPRCURSOR = CConfigValue<Hyprlang::INT>("cursor:enable_hyprcursor");
+    static auto PUSEHYPRCURSOR = CConfigValue<Config::INTEGER>("cursor:enable_hyprcursor");
 
     if (m_hyprcursor->valid() && *PUSEHYPRCURSOR) {
         // find default size. First, HYPRCURSOR_SIZE then default to 24
@@ -79,7 +80,7 @@ CCursorManager::CCursorManager() {
         if (SIZE) {
             try {
                 m_size = std::stoi(SIZE);
-            } catch (...) { ; }
+            } catch (...) { Log::logger->log(Log::WARN, "Invalid HYPRCURSOR_SIZE value \"{}\"", SIZE); }
         }
 
         if (m_size <= 0) {
@@ -93,7 +94,7 @@ CCursorManager::CCursorManager() {
         if (SIZE) {
             try {
                 m_size = std::stoi(SIZE);
-            } catch (...) { ; }
+            } catch (...) { Log::logger->log(Log::WARN, "Invalid XCURSOR_SIZE value \"{}\"", SIZE); }
         }
 
         if (m_size <= 0) {
@@ -160,7 +161,7 @@ void CCursorManager::setAnimationTimer(const int& frame, const int& delay) {
 
 void CCursorManager::setCursorFromName(const std::string& name) {
 
-    static auto PUSEHYPRCURSOR = CConfigValue<Hyprlang::INT>("cursor:enable_hyprcursor");
+    static auto PUSEHYPRCURSOR = CConfigValue<Config::INTEGER>("cursor:enable_hyprcursor");
 
     auto        setXCursor = [this](auto const& name) {
         float scale = std::ceil(m_cursorScale);
@@ -272,7 +273,7 @@ SCursorImageData CCursorManager::dataFor(const std::string& name) {
 }
 
 void CCursorManager::setXWaylandCursor() {
-    static auto PUSEHYPRCURSOR = CConfigValue<Hyprlang::INT>("cursor:enable_hyprcursor");
+    static auto PUSEHYPRCURSOR = CConfigValue<Config::INTEGER>("cursor:enable_hyprcursor");
     const auto  CURSOR         = dataFor("left_ptr");
     if (CURSOR.surface && *PUSEHYPRCURSOR)
         g_pXWayland->setCursor(cairo_image_surface_get_data(CURSOR.surface), cairo_image_surface_get_stride(CURSOR.surface), {CURSOR.size, CURSOR.size},
@@ -286,10 +287,10 @@ void CCursorManager::setXWaylandCursor() {
 }
 
 void CCursorManager::updateTheme() {
-    static auto PUSEHYPRCURSOR = CConfigValue<Hyprlang::INT>("cursor:enable_hyprcursor");
+    static auto PUSEHYPRCURSOR = CConfigValue<Config::INTEGER>("cursor:enable_hyprcursor");
     float       highestScale   = 1.0;
 
-    for (auto const& m : g_pCompositor->m_monitors) {
+    for (auto const& m : State::monitorState()->monitors()) {
         if (m->m_scale > highestScale)
             highestScale = m->m_scale;
     }
@@ -307,14 +308,14 @@ void CCursorManager::updateTheme() {
             m_hyprcursor->loadThemeStyle(m_currentStyleInfo);
     }
 
-    for (auto const& m : g_pCompositor->m_monitors) {
+    for (auto const& m : State::monitorState()->monitors()) {
         m->m_forceFullFrames = 5;
-        g_pCompositor->scheduleFrameForMonitor(m, Aquamarine::IOutput::AQ_SCHEDULE_CURSOR_SHAPE);
+        m->scheduleFrame(Aquamarine::IOutput::AQ_SCHEDULE_CURSOR_SHAPE);
     }
 }
 
 bool CCursorManager::changeTheme(const std::string& name, const int size) {
-    static auto PUSEHYPRCURSOR = CConfigValue<Hyprlang::INT>("cursor:enable_hyprcursor");
+    static auto PUSEHYPRCURSOR = CConfigValue<Config::INTEGER>("cursor:enable_hyprcursor");
     m_theme                    = name.empty() ? "" : name;
     m_size                     = size <= 0 ? 24 : size;
     auto xcursor_theme         = getenv("XCURSOR_THEME") ? getenv("XCURSOR_THEME") : "default";

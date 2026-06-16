@@ -7,7 +7,7 @@
 #include "../../desktop/view/Window.hpp"
 #include "../../desktop/history/WindowHistoryTracker.hpp"
 #include "../../desktop/state/FocusState.hpp"
-#include "../../helpers/Monitor.hpp"
+#include "../../output/Monitor.hpp"
 #include "../../render/Renderer.hpp"
 
 #include "../../debug/log/Logger.hpp"
@@ -101,9 +101,9 @@ size_t CAlgorithm::floatingTargets() const {
     return m_floatingTargets.size();
 }
 
-void CAlgorithm::recalculate() {
-    m_tiled->recalculate();
-    m_floating->recalculate();
+void CAlgorithm::recalculate(eRecalculateReason reason) {
+    m_tiled->recalculate(reason);
+    m_floating->recalculate(reason);
 
     const auto PWORKSPACE = m_space->workspace();
     if (!PWORKSPACE)
@@ -113,8 +113,9 @@ void CAlgorithm::recalculate() {
 
     if (PWORKSPACE->m_hasFullscreenWindow && PMONITOR) {
         // massive hack from the fullscreen func
-        const auto PFULLWINDOW = PWORKSPACE->getFullscreenWindow();
-
+        const auto PFULLWINDOW = PWORKSPACE->getFullscreenWindow(false);
+        // prevent tiled fullscreen scrolling window from being brought into view when fullscreening a floating window in the same workspace.
+        // TODO: this is a patch. Recommend handling setting of fullscreen windows's size and position in their fullscreen functions and removing this hack entirely.
         if (PFULLWINDOW) {
             if (PWORKSPACE->m_fullscreenMode == FSMODE_FULLSCREEN) {
                 *PFULLWINDOW->m_realPosition = PMONITOR->m_position;
@@ -132,7 +133,7 @@ void CAlgorithm::recenter(SP<ITarget> t) {
         m_floating->recenter(t);
 }
 
-std::expected<void, std::string> CAlgorithm::layoutMsg(const std::string_view& sv) {
+Config::ErrorResult CAlgorithm::layoutMsg(const std::string_view& sv) {
     if (const auto ret = m_floating->layoutMsg(sv); !ret)
         return ret;
     return m_tiled->layoutMsg(sv);
@@ -152,6 +153,25 @@ void CAlgorithm::resizeTarget(const Vector2D& Δ, SP<ITarget> target, eRectCorne
 void CAlgorithm::moveTarget(const Vector2D& Δ, SP<ITarget> target) {
     if (target->floating())
         m_floating->moveTarget(Δ, target);
+}
+
+eFullscreenRequestResult CAlgorithm::requestFullscreen(SP<ITarget> target, eFullscreenMode currentEffectiveMode, eFullscreenMode effectiveMode) {
+    if (!target)
+        return FULLSCREEN_REQUEST_DEFAULT;
+
+    const SFullscreenRequest request = {.target = target, .currentEffectiveMode = currentEffectiveMode, .effectiveMode = effectiveMode};
+    return target->floating() ? m_floating->requestFullscreen(request) : m_tiled->requestFullscreen(request);
+}
+
+SP<ITarget> CAlgorithm::layoutFullscreenTarget() const {
+    if (const auto TARGET = m_tiled->layoutFullscreenTarget(); TARGET)
+        return TARGET;
+
+    return m_floating->layoutFullscreenTarget();
+}
+
+bool CAlgorithm::layoutFullscreenCoversMonitor() const {
+    return m_tiled->layoutFullscreenCoversMonitor() || m_floating->layoutFullscreenCoversMonitor();
 }
 
 void CAlgorithm::swapTargets(SP<ITarget> a, SP<ITarget> b) {

@@ -2,10 +2,11 @@
 #include "../Compositor.hpp"
 #include "../desktop/state/FocusState.hpp"
 #include "../config/ConfigValue.hpp"
-#include "../helpers/Monitor.hpp"
+#include "../output/Monitor.hpp"
 #include "../protocols/XDGShell.hpp"
 #include "../protocols/core/Compositor.hpp"
 #include "../xwayland/XWayland.hpp"
+#include "../state/MonitorState.hpp"
 #include <hyprutils/math/Vector2D.hpp>
 
 #define OUTPUT_MANAGER_VERSION                   3
@@ -178,12 +179,12 @@ Vector2D CHyprXWaylandManager::waylandToXWaylandCoords(const Vector2D& coord) {
 }
 
 Vector2D CHyprXWaylandManager::waylandToXWaylandCoords(const Vector2D& coord, PHLMONITOR preferredMonitor) {
-    static auto PXWLFORCESCALEZERO = CConfigValue<Hyprlang::INT>("xwayland:force_zero_scaling");
+    static auto PXWLFORCESCALEZERO = CConfigValue<Config::INTEGER>("xwayland:force_zero_scaling");
 
     PHLMONITOR  pMonitor = preferredMonitor;
     if (!pMonitor) {
         double bestDistance = __FLT_MAX__;
-        for (const auto& m : g_pCompositor->m_monitors) {
+        for (const auto& m : State::monitorState()->monitors()) {
             const auto SIZ = *PXWLFORCESCALEZERO ? m->m_transformedSize : m->m_size;
 
             double     distance = vecToRectDistanceSquared(coord, {m->m_position.x, m->m_position.y}, {m->m_position.x + SIZ.x - 1, m->m_position.y + SIZ.y - 1});
@@ -215,12 +216,12 @@ Vector2D CHyprXWaylandManager::xwaylandToWaylandCoords(const Vector2D& coord) {
 
 Vector2D CHyprXWaylandManager::xwaylandToWaylandCoords(const Vector2D& coord, PHLMONITOR preferredMonitor) {
 
-    static auto PXWLFORCESCALEZERO = CConfigValue<Hyprlang::INT>("xwayland:force_zero_scaling");
+    static auto PXWLFORCESCALEZERO = CConfigValue<Config::INTEGER>("xwayland:force_zero_scaling");
 
     PHLMONITOR  pMonitor = preferredMonitor;
     if (!pMonitor) {
         double bestDistance = __FLT_MAX__;
-        for (const auto& m : g_pCompositor->m_monitors) {
+        for (const auto& m : State::monitorState()->monitors()) {
             const auto SIZ = *PXWLFORCESCALEZERO ? m->m_transformedSize : m->m_size;
 
             double     distance =

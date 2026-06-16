@@ -9,6 +9,7 @@
 #include "../render/pass/BorderPassElement.hpp"
 #include "../render/pass/RectPassElement.hpp"
 #include "../render/pass/TexPassElement.hpp"
+#include "../state/MonitorState.hpp"
 
 #include <algorithm>
 #include <format>
@@ -63,6 +64,7 @@ COverlay::COverlay() {
             return;
 
         g_pHyprRenderer->damageMonitor(Desktop::focusState()->monitor());
+        updateReservedArea(true);
         m_monitorChanged = true;
     });
 
@@ -101,16 +103,16 @@ void COverlay::createQueued() {
     m_fadeOpacity->setValueAndWarp(0.f);
     *m_fadeOpacity = 1.f;
 
-    const auto PMONITOR = g_pCompositor->m_monitors.front();
+    const auto PMONITOR = Desktop::focusState()->monitor();
     if (!PMONITOR)
         return;
 
     const float       SCALE    = PMONITOR->m_scale;
     const int         FONTSIZE = std::clamp(sc<int>(10.f * ((PMONITOR->m_pixelSize.x * SCALE) / 1920.f)), 8, 40);
 
-    static auto       LINELIMIT    = CConfigValue<Hyprlang::INT>("debug:error_limit");
-    static auto       BAR_POSITION = CConfigValue<Hyprlang::INT>("debug:error_position");
-    static auto       FONT_FAMILY  = CConfigValue<std::string>("misc:font_family");
+    static auto       LINELIMIT    = CConfigValue<Config::INTEGER>("debug:error_limit");
+    static auto       BAR_POSITION = CConfigValue<Config::INTEGER>("debug:error_position");
+    static auto       FONT_FAMILY  = CConfigValue<Config::STRING>("misc:font_family");
 
     const bool        TOPBAR      = *BAR_POSITION == 0;
     const std::string visibleText = buildVisibleText(m_queued, *LINELIMIT);
@@ -152,14 +154,25 @@ void COverlay::createQueued() {
 
     g_pHyprRenderer->damageMonitor(PMONITOR);
 
-    for (const auto& m : g_pCompositor->m_monitors) {
+    updateReservedArea(true);
+}
+
+void COverlay::updateReservedArea(bool reserve) {
+    static auto BAR_POSITION = CConfigValue<Config::INTEGER>("debug:error_position");
+
+    const auto  PMONITOR = Desktop::focusState()->monitor();
+    const bool  TOPBAR   = *BAR_POSITION == 0;
+
+    for (const auto& m : State::monitorState()->monitors()) {
         m->m_reservedArea.resetType(Desktop::RESERVED_DYNAMIC_TYPE_ERROR_BAR);
     }
 
-    const auto RESERVED = (m_lastHeight + m_outerPad) / SCALE;
-    PMONITOR->m_reservedArea.addType(Desktop::RESERVED_DYNAMIC_TYPE_ERROR_BAR, Vector2D{0.0, TOPBAR ? RESERVED : 0.0}, Vector2D{0.0, !TOPBAR ? RESERVED : 0.0});
+    if (reserve && PMONITOR) {
+        const auto RESERVED = (m_lastHeight + m_outerPad) / PMONITOR->m_scale;
+        PMONITOR->m_reservedArea.addType(Desktop::RESERVED_DYNAMIC_TYPE_ERROR_BAR, Vector2D{0.0, TOPBAR ? RESERVED : 0.0}, Vector2D{0.0, !TOPBAR ? RESERVED : 0.0});
+    }
 
-    for (const auto& m : g_pCompositor->m_monitors) {
+    for (const auto& m : State::monitorState()->monitors()) {
         g_pHyprRenderer->arrangeLayersForMonitor(m->m_id);
     }
 }
@@ -182,10 +195,7 @@ void COverlay::draw() {
                 m_isCreated = false;
                 m_queued    = "";
 
-                for (auto& m : g_pCompositor->m_monitors) {
-                    g_pHyprRenderer->arrangeLayersForMonitor(m->m_id);
-                    m->m_reservedArea.resetType(Desktop::RESERVED_DYNAMIC_TYPE_ERROR_BAR);
-                }
+                updateReservedArea(false);
 
                 return;
             } else {
@@ -199,7 +209,7 @@ void COverlay::draw() {
     if (!PMONITOR)
         return;
 
-    static auto BAR_POSITION = CConfigValue<Hyprlang::INT>("debug:error_position");
+    static auto BAR_POSITION = CConfigValue<Config::INTEGER>("debug:error_position");
     const bool  TOPBAR       = *BAR_POSITION == 0;
 
     const float barWidth = std::max<float>(1.F, sc<float>(PMONITOR->m_pixelSize.x) - m_outerPad * 2.F);

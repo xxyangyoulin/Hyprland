@@ -4,6 +4,7 @@
 #include "../../managers/eventLoop/EventLoopManager.hpp"
 #include "../pass/BorderPassElement.hpp"
 #include "../Renderer.hpp"
+#include "../../state/MonitorState.hpp"
 
 CHyprBorderDecoration::CHyprBorderDecoration(PHLWINDOW pWindow) : IHyprWindowDecoration(pWindow), m_window(pWindow) {
     ;
@@ -93,7 +94,7 @@ void CHyprBorderDecoration::draw(PHLMONITOR pMonitor, float const& a) {
         data.lerp     = m_window->m_borderFadeAnimationProgress->value();
     }
 
-    g_pHyprRenderer->m_renderPass.add(makeUnique<CBorderPassElement>(data));
+    g_pHyprRenderer->addPassElement(makeUnique<CBorderPassElement>(data));
 }
 
 eDecorationType CHyprBorderDecoration::getDecorationType() {
@@ -128,7 +129,7 @@ void CHyprBorderDecoration::damageEntire() {
 
     const CBox borderExtents = borderRegion.getExtents();
 
-    for (auto const& m : g_pCompositor->m_monitors) {
+    for (auto const& m : State::monitorState()->monitors()) {
         const CBox monitorBox = {m->m_position, m->m_size};
         if (borderExtents.intersection(monitorBox).empty())
             continue;
@@ -147,7 +148,7 @@ eDecorationLayer CHyprBorderDecoration::getDecorationLayer() {
 }
 
 uint64_t CHyprBorderDecoration::getDecorationFlags() {
-    static auto PPARTOFWINDOW = CConfigValue<Hyprlang::INT>("decoration:border_part_of_window");
+    static auto PPARTOFWINDOW = CConfigValue<Config::INTEGER>("decoration:border_part_of_window");
 
     return *PPARTOFWINDOW && !doesntWantBorders() ? DECORATION_PART_OF_MAIN_WINDOW : 0;
 }

@@ -36,9 +36,11 @@
   libxkbcommon,
   libuuid,
   libgbm,
+  lua5_5,
   muparser,
   pango,
   pciutils,
+  python3,
   re2,
   systemd,
   tomlplusplus,
@@ -56,6 +58,7 @@
   commit,
   revCount,
   date,
+  readline,
   # deprecated flags
   enableNvidiaPatches ? false,
   nvidiaPatches ? false,
@@ -116,13 +119,14 @@ customStdenv.mkDerivation (finalAttrs: {
             ../hyprland.pc.in
             ../hyprpm
             ../LICENSE
+            ../meta
             ../protocols
             ../src
             ../start
             ../systemd
             ../VERSION
             (fs.fileFilter (file: file.hasExt "1") ../docs)
-            (fs.fileFilter (file: file.hasExt "conf" || file.hasExt "in") ../example)
+            (fs.fileFilter (file: file.hasExt "conf" || file.hasExt "in" || file.hasExt "lua" ) ../example)
             (fs.fileFilter (file: file.hasExt "sh") ../scripts)
             (fs.fileFilter (file: file.name == "CMakeLists.txt") ../.)
             (optional withTests [
@@ -160,6 +164,7 @@ customStdenv.mkDerivation (finalAttrs: {
     makeWrapper
     cmake
     pkg-config
+    python3
   ];
 
   outputs = [
@@ -190,6 +195,7 @@ customStdenv.mkDerivation (finalAttrs: {
       libuuid
       libxcursor
       libxkbcommon
+      lua5_5
       muparser
       pango
       pciutils
@@ -199,6 +205,7 @@ customStdenv.mkDerivation (finalAttrs: {
       wayland
       wayland-protocols
       wayland-scanner
+      readline
     ]
     (optionals customStdenv.hostPlatform.isBSD [ epoll-shim ])
     (optionals customStdenv.hostPlatform.isMusl [ libexecinfo ])
@@ -254,6 +261,7 @@ customStdenv.mkDerivation (finalAttrs: {
       install hyprtester/pointer-warp -t $out/bin
       install hyprtester/pointer-scroll -t $out/bin
       install hyprtester/shortcut-inhibitor -t $out/bin
+      install hyprtester/keyboard-modifiers -t $out/bin
       install hyprland_gtests -t $out/bin
       install hyprtester/child-window -t $out/bin
     ''}

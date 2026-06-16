@@ -1,7 +1,7 @@
 #include "ColorManagement.hpp"
 #include "Compositor.hpp"
 #include "color-management-v1.hpp"
-#include "../helpers/Monitor.hpp"
+#include "../output/Monitor.hpp"
 #include "core/Output.hpp"
 #include "../helpers/cm/ColorManagement.hpp"
 #include <cstdint>
@@ -807,7 +807,7 @@ CColorManagementImageDescriptionInfo::CColorManagementImageDescriptionInfo(SP<CW
     if (m_settings.primariesNameSet)
         m_resource->sendPrimariesNamed(m_settings.primariesNamed);
 
-    m_resource->sendTfNamed(m_settings.transferFunction);
+    m_resource->sendTfNamed(convertTransferFunction(m_settings.transferFunction, m_resource->version() == 1));
 
     if (m_settings.transferFunctionPower != 1.0f)
         m_resource->sendTfPower(std::round(m_settings.transferFunctionPower * 10000));
@@ -871,7 +871,7 @@ void CColorManagementProtocol::onImagePreferredChanged(uint32_t preferredId) {
     }
 }
 
-void CColorManagementProtocol::onMonitorImageDescriptionChanged(WP<CMonitor> monitor) {
+void CColorManagementProtocol::onMonitorImageDescriptionChanged(PHLMONITORREF monitor) {
     for (auto const& output : m_outputs) {
         if (output->m_output && output->m_output->m_monitor == monitor)
             output->m_resource->sendImageDescriptionChanged();

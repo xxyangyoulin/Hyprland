@@ -11,6 +11,7 @@
 #include "../../helpers/varlist/VarList.hpp"
 #include "../../render/Renderer.hpp"
 #include "../../event/EventBus.hpp"
+#include "../../state/MonitorState.hpp"
 
 #include <hyprgraphics/color/Color.hpp>
 #include <hyprutils/animation/AnimatedVariable.hpp>
@@ -42,7 +43,7 @@ static void updateVariable(CAnimatedVariable<VarType>& av, const float POINTY, b
     av.value()       = av.begun() + DELTA * POINTY;
 }
 
-static void updateColorVariable(CAnimatedVariable<CHyprColor>& av, const float POINTY, bool warp) {
+static void updateColorVariable(CAnimatedVariable<CHyprColor>& av, const float POINTY, bool warp = false) {
     if (warp || av.value() == av.goal()) {
         av.warp(true, false);
         return;
@@ -134,20 +135,17 @@ static void handleUpdate(CAnimatedVariable<VarType>& av, bool warp) {
         if (!ws->m_monitor.lock())
             return;
     } else if (auto ls = av.m_Context.pLayer.lock()) {
-        if (!g_pCompositor->getMonitorFromVector(ls->m_realPosition->goal() + ls->m_realSize->goal() / 2.F))
+        if (!State::monitorState()->query().vec(ls->m_realPosition->goal() + ls->m_realSize->goal() / 2.F).run())
             return;
         animationsDisabled = animationsDisabled || ls->m_ruleApplicator->noanim().valueOrDefault();
     }
 
-    const auto SPENT   = av.getPercent();
-    const auto PBEZIER = g_pAnimationManager->getBezier(av.getBezierName());
-    const auto POINTY  = PBEZIER->getYForPoint(SPENT);
-    const bool WARP    = animationsDisabled || SPENT >= 1.f;
+    const auto STEP = av.getCurveStep();
 
     if constexpr (std::same_as<VarType, CHyprColor>)
-        updateColorVariable(av, POINTY, WARP);
+        updateColorVariable(av, STEP.value, STEP.finished || animationsDisabled);
     else
-        updateVariable<VarType>(av, POINTY, WARP);
+        updateVariable<VarType>(av, STEP.value, STEP.finished || animationsDisabled);
 
     av.onUpdate();
 }
@@ -157,7 +155,7 @@ void CHyprAnimationManager::tick() {
     m_lastTickTimeMs                        = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - lastTick).count() / 1000.0;
     lastTick                                = std::chrono::high_resolution_clock::now();
 
-    static auto PANIMENABLED = CConfigValue<Hyprlang::INT>("animations:enabled");
+    static auto PANIMENABLED = CConfigValue<Config::INTEGER>("animations:enabled");
 
     if (m_vActiveAnimatedVariables.empty()) {
         tickDone();
@@ -173,9 +171,11 @@ void CHyprAnimationManager::tick() {
         PHLWORKSPACE workspace;
         PHLLS        layer;
         PHLMONITOR   monitor;
-        bool         entire = false;
-        bool         border = false;
-        bool         shadow = false;
+        CBox         previousFull;
+        bool         entire            = false;
+        bool         border            = false;
+        bool         shadow            = false;
+        bool         trackWindowMotion = false;
     };
 
     std::vector<SDamageOwner> owners;
@@ -226,7 +226,7 @@ void CHyprAnimationManager::tick() {
                 }
             }
             if (!owner) {
-                auto monitor = g_pCompositor->getMonitorFromVector(ls->m_realPosition->goal() + ls->m_realSize->goal() / 2.F);
+                auto monitor = State::monitorState()->query().vec(ls->m_realPosition->goal() + ls->m_realSize->goal() / 2.F).run();
                 if (!monitor)
                     continue;
                 owners.emplace_back(SDamageOwner{.layer = ls, .monitor = monitor});
@@ -241,6 +241,14 @@ void CHyprAnimationManager::tick() {
             case AVARDAMAGE_SHADOW: owner->shadow = true; break;
             default: break;
         }
+    }
+
+    for (auto& owner : owners) {
+        if (!owner.window)
+            continue;
+
+        owner.previousFull      = owner.window->getFullWindowBoundingBox();
+        owner.trackWindowMotion = true;
     }
 
     // pre-damage each owner once (old state)
@@ -284,6 +292,13 @@ void CHyprAnimationManager::tick() {
         }
     }
 
+    for (const auto& owner : owners) {
+        if (!owner.window || !owner.trackWindowMotion)
+            continue;
+
+        owner.window->recordMotionBlur(owner.previousFull, owner.window->getFullWindowBoundingBox());
+    }
+
     // post-damage each owner once (new state) + schedule frames
     for (const auto& owner : owners) {
         if (owner.window)
@@ -309,7 +324,7 @@ void CHyprAnimationManager::tick() {
         }
 
         if (!owner.monitor->inFullscreenMode())
-            g_pCompositor->scheduleFrameForMonitor(owner.monitor, Aquamarine::IOutput::AQ_SCHEDULE_ANIMATION);
+            owner.monitor->scheduleFrame(Aquamarine::IOutput::AQ_SCHEDULE_ANIMATION);
     }
 
     tickDone();
@@ -321,8 +336,7 @@ void CHyprAnimationManager::frameTick() {
     if (!shouldTickForNext())
         return;
 
-    if UNLIKELY (!g_pCompositor->m_sessionActive || g_pCompositor->m_unsafeState ||
-                 !std::ranges::any_of(g_pCompositor->m_monitors, [](const auto& mon) { return mon->m_enabled && mon->m_output; }))
+    if UNLIKELY (!g_pCompositor->m_sessionActive || !std::ranges::any_of(State::monitorState()->monitors(), [](const auto& mon) { return mon->m_enabled && mon->m_output; }))
         return;
 
     if (!m_lastTickValid || m_lastTickTimer.getMillis() >= 1.0f) {
@@ -404,6 +418,10 @@ std::string CHyprAnimationManager::styleValidInConfigVar(const std::string& conf
 
         return "unknown style";
     } else if (config == "borderangle") {
+        if (style == "loop" || style == "once")
+            return "";
+        return "unknown style";
+    } else if (config == "shadowangle") {
         if (style == "loop" || style == "once")
             return "";
         return "unknown style";

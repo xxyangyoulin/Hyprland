@@ -4,16 +4,18 @@
 #include "Seat.hpp"
 #include "../types/WLBuffer.hpp"
 #include <algorithm>
+#include <array>
 #include <ranges>
 #include "Subcompositor.hpp"
 #include "../Viewporter.hpp"
-#include "../../helpers/Monitor.hpp"
+#include "../../output/Monitor.hpp"
 #include "../PresentationTime.hpp"
 #include "../DRMSyncobj.hpp"
 #include "../types/DMABuffer.hpp"
 #include "../../render/Renderer.hpp"
 #include "config/ConfigValue.hpp"
 #include "../../managers/eventLoop/EventLoopManager.hpp"
+#include "../../state/MonitorState.hpp"
 #include "protocols/types/SurfaceRole.hpp"
 #include "render/Texture.hpp"
 #include <cstring>
@@ -149,8 +151,8 @@ CWLSurfaceResource::CWLSurfaceResource(SP<CWlSurface> resource_) : m_resource(re
         m_events.stateCommit.emit(state);
 
         if (state->buffer && state->buffer->type() == Aquamarine::BUFFER_TYPE_DMABUF && state->buffer->dmabuf().success && !state->updated.bits.acquire) {
-            state->buffer->m_syncFd = dc<CDMABuffer*>(state->buffer.m_buffer.get())->exportSyncFile();
-            if (state->buffer->m_syncFd.isValid())
+            state->buffer->m_syncFds = dc<CDMABuffer*>(state->buffer.m_buffer.get())->exportSyncFiles();
+            if (!state->buffer->m_syncFds.empty())
                 m_stateQueue.lock(state, LOCK_REASON_FENCE);
         }
 
@@ -351,9 +353,8 @@ void CWLSurfaceResource::resetRole() {
     m_role = makeShared<CDefaultSurfaceRole>();
 }
 
-void CWLSurfaceResource::bfHelper(std::vector<SP<CWLSurfaceResource>> const& nodes, std::function<void(SP<CWLSurfaceResource>, const Vector2D&, void*)> fn, void* data) {
+void CWLSurfaceResource::bfHelper(std::span<const SP<CWLSurfaceResource>> nodes, std::function<void(SP<CWLSurfaceResource>, const Vector2D&, void*)> fn, void* data) {
     std::vector<SP<CWLSurfaceResource>> nodes2;
-    nodes2.reserve(nodes.size() * 2);
 
     // first, gather all nodes below
     for (auto const& n : nodes) {
@@ -371,6 +372,9 @@ void CWLSurfaceResource::bfHelper(std::vector<SP<CWLSurfaceResource>> const& nod
             const auto surface = subsurface->m_surface.lock();
             if (!surface)
                 continue;
+
+            if (nodes2.empty())
+                nodes2.reserve(nodes.size() * 2);
 
             nodes2.emplace_back(surface);
         }
@@ -407,6 +411,9 @@ void CWLSurfaceResource::bfHelper(std::vector<SP<CWLSurfaceResource>> const& nod
             if (!surface)
                 continue;
 
+            if (nodes2.empty())
+                nodes2.reserve(nodes.size() * 2);
+
             nodes2.emplace_back(surface);
         }
     }
@@ -416,8 +423,7 @@ void CWLSurfaceResource::bfHelper(std::vector<SP<CWLSurfaceResource>> const& nod
 }
 
 void CWLSurfaceResource::breadthfirst(std::function<void(SP<CWLSurfaceResource>, const Vector2D&, void*)> fn, void* data) {
-    std::vector<SP<CWLSurfaceResource>> surfs;
-    surfs.emplace_back(m_self.lock());
+    const std::array surfs = {m_self.lock()};
     bfHelper(surfs, fn, data);
 }
 
@@ -453,7 +459,7 @@ SP<CWLSurfaceResource> CWLSurfaceResource::findWithCM() {
 
 std::pair<SP<CWLSurfaceResource>, Vector2D> CWLSurfaceResource::at(const Vector2D& localCoords, bool allowsInput) {
     std::vector<std::pair<SP<CWLSurfaceResource>, Vector2D>> surfs;
-    breadthfirst([&surfs](SP<CWLSurfaceResource> surf, const Vector2D& offset, void* data) { surfs.emplace_back(std::make_pair<>(surf, offset)); }, &surfs);
+    breadthfirst([&surfs](SP<CWLSurfaceResource> surf, const Vector2D& offset, void* data) { surfs.emplace_back(surf, offset); }, &surfs);
 
     for (auto const& [surf, pos] : surfs | std::views::reverse) {
         if (!allowsInput) {
@@ -542,13 +548,33 @@ void CWLSurfaceResource::scheduleState(WP<SSurfaceState> state) {
     } else if (state->buffer && state->buffer->isSynchronous()) {
         // synchronous (shm) buffers can be read immediately
         m_stateQueue.unlock(state, LOCK_REASON_FENCE);
-    } else if (state->buffer && state->buffer->m_syncFd.isValid()) {
+    } else if (state->buffer && !state->buffer->m_syncFds.empty()) {
         // async buffer and is dmabuf, then we can wait on implicit fences
-        g_pEventLoopManager->doOnReadable(std::move(state->buffer->m_syncFd), [state, whenReadable]() { whenReadable(state, LOCK_REASON_FENCE); });
+        drainSyncFds(state, LOCK_REASON_FENCE);
     } else {
         // state commit without a buffer.
         m_stateQueue.tryProcess();
     }
+}
+
+void CWLSurfaceResource::drainSyncFds(WP<SSurfaceState> state, eLockReason reason) {
+    auto& fds = state->buffer->m_syncFds;
+
+    std::erase_if(fds, [](const auto& fd) { return fd.isReadable(); });
+
+    if (!fds.empty()) {
+        auto fd = std::move(fds.front());
+        fds.erase(fds.begin());
+        g_pEventLoopManager->doOnReadable(std::move(fd), [this, surf = m_self, state, reason]() {
+            if (!surf || !state)
+                return;
+
+            drainSyncFds(state, reason);
+        });
+        return;
+    }
+
+    m_stateQueue.unlock(state, reason);
 }
 
 void CWLSurfaceResource::commitState(SSurfaceState& state) {
@@ -604,7 +630,7 @@ void CWLSurfaceResource::commitState(SSurfaceState& state) {
 }
 
 PImageDescription CWLSurfaceResource::getPreferredImageDescription() {
-    static const auto PFORCE_HDR = CConfigValue<Hyprlang::INT>("quirks:prefer_hdr");
+    static const auto PFORCE_HDR = CConfigValue<Config::INTEGER>("quirks:prefer_hdr");
     const auto        WINDOW     = m_hlSurface ? Desktop::View::CWindow::fromView(m_hlSurface->view()) : nullptr;
 
     if (*PFORCE_HDR == 1 || (*PFORCE_HDR == 2 && m_hlSurface && WINDOW && WINDOW->m_class == "gamescope"))
@@ -615,7 +641,7 @@ PImageDescription CWLSurfaceResource::getPreferredImageDescription() {
         auto subsurface = sc<CSubsurfaceRole*>(parent->m_role.get())->m_subsurface.lock();
         parent          = subsurface->t1Parent();
     }
-    WP<CMonitor> monitor;
+    PHLMONITORREF monitor;
     if (parent->m_enteredOutputs.size() == 1)
         monitor = parent->m_enteredOutputs[0];
     else if (m_hlSurface.valid() && WINDOW)
@@ -664,7 +690,7 @@ bool CWLSurfaceResource::hasVisibleSubsurface() {
 
 bool CWLSurfaceResource::isTearing() {
     if (m_enteredOutputs.empty() && m_hlSurface) {
-        for (auto& m : g_pCompositor->m_monitors) {
+        for (auto& m : State::monitorState()->monitors()) {
             if (!m || !m->m_enabled)
                 continue;
 
@@ -710,7 +736,10 @@ void CWLSurfaceResource::updateCursorShm(CRegion damage) {
 
     shmData.resize(bufLen);
 
-    if (const auto RECTS = damage.getRects(); RECTS.size() == 1 && RECTS.at(0).x2 == buf->size.x && RECTS.at(0).y2 == buf->size.y)
+    int         rectsNum = 0;
+    const auto* rects    = pixman_region32_rectangles(damage.pixman(), &rectsNum);
+
+    if (rectsNum == 1 && rects[0].x2 == buf->size.x && rects[0].y2 == buf->size.y)
         memcpy(shmData.data(), pixelData, bufLen);
     else {
         damage.forEachRect([&pixelData, &shmData](const auto& box) {

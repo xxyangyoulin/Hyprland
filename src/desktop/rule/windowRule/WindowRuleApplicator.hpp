@@ -8,6 +8,7 @@
 #include "../Rule.hpp"
 #include "../../types/OverridableVar.hpp"
 #include "../../../helpers/math/Math.hpp"
+#include "../../../helpers/math/Expression.hpp"
 #include "../../../helpers/TagKeeper.hpp"
 #include "../../../config/shared/complex/ComplexDataTypes.hpp"
 
@@ -38,25 +39,25 @@ namespace Desktop::Rule {
 
         // static props
         struct {
-            std::string              monitor, workspace, group;
+            std::string                          monitor, workspace, group;
 
-            std::optional<bool>      floating;
-            std::optional<bool>      fullscreen;
-            std::optional<bool>      maximize;
-            std::optional<bool>      pseudo;
-            std::optional<bool>      pin;
-            std::optional<bool>      noInitialFocus;
-            std::optional<bool>      center;
+            std::optional<bool>                  floating;
+            std::optional<bool>                  fullscreen;
+            std::optional<bool>                  maximize;
+            std::optional<bool>                  pseudo;
+            std::optional<bool>                  pin;
+            std::optional<bool>                  noInitialFocus;
+            std::optional<bool>                  center;
 
-            std::optional<int>       fullscreenStateClient;
-            std::optional<int>       fullscreenStateInternal;
-            std::optional<int>       content;
-            std::optional<int>       noCloseFor;
+            std::optional<int>                   fullscreenStateClient;
+            std::optional<int>                   fullscreenStateInternal;
+            std::optional<int>                   content;
+            std::optional<int>                   noCloseFor;
 
-            std::string              size, position;
-            std::optional<float>     scrollingWidth;
+            std::optional<Math::SExpressionVec2> size, position;
+            std::optional<float>                 scrollingWidth;
 
-            std::vector<std::string> suppressEvent;
+            std::vector<std::string>             suppressEvent;
         } static_;
 
         struct SCustomPropContainer {
@@ -113,17 +114,20 @@ namespace Desktop::Rule {
         DEFINE_PROP(bool, noFollowMouse, false, WINDOW_RULE_EFFECT_NO_FOLLOW_MOUSE)
         DEFINE_PROP(bool, noScreenShare, false, WINDOW_RULE_EFFECT_NO_SCREEN_SHARE)
         DEFINE_PROP(bool, noVRR, false, WINDOW_RULE_EFFECT_NO_VRR)
+        DEFINE_PROP(bool, noAutoHDR, false, WINDOW_RULE_EFFECT_NO_AUTO_HDR)
         DEFINE_PROP(bool, persistentSize, false, WINDOW_RULE_EFFECT_PERSISTENT_SIZE)
         DEFINE_PROP(bool, stayFocused, false, WINDOW_RULE_EFFECT_STAY_FOCUSED)
+        DEFINE_PROP(bool, confinePointer, false, WINDOW_RULE_EFFECT_CONFINE_POINTER)
 
         DEFINE_PROP(int, idleInhibitMode, false, WINDOW_RULE_EFFECT_IDLE_INHIBIT)
 
-        DEFINE_PROP(Hyprlang::INT, borderSize, {std::string("general:border_size") COMMA sc<Hyprlang::INT>(0) COMMA std::nullopt}, WINDOW_RULE_EFFECT_BORDER_SIZE)
-        DEFINE_PROP(Hyprlang::INT, rounding, {std::string("decoration:rounding") COMMA sc<Hyprlang::INT>(0) COMMA std::nullopt}, WINDOW_RULE_EFFECT_ROUNDING)
+        DEFINE_PROP(Config::INTEGER, borderSize, {std::string("general:border_size") COMMA sc<Config::INTEGER>(0) COMMA std::nullopt}, WINDOW_RULE_EFFECT_BORDER_SIZE)
+        DEFINE_PROP(Config::INTEGER, rounding, {std::string("decoration:rounding") COMMA sc<Config::INTEGER>(0) COMMA std::nullopt}, WINDOW_RULE_EFFECT_ROUNDING)
+        DEFINE_PROP(Config::INTEGER, tonemap, 1, WINDOW_RULE_EFFECT_TONEMAP)
 
-        DEFINE_PROP(Hyprlang::FLOAT, roundingPower, {std::string("decoration:rounding_power")}, WINDOW_RULE_EFFECT_ROUNDING_POWER)
-        DEFINE_PROP(Hyprlang::FLOAT, scrollMouse, {std::string("input:scroll_factor")}, WINDOW_RULE_EFFECT_SCROLL_MOUSE)
-        DEFINE_PROP(Hyprlang::FLOAT, scrollTouchpad, {std::string("input:touchpad:scroll_factor")}, WINDOW_RULE_EFFECT_SCROLL_TOUCHPAD)
+        DEFINE_PROP(Config::FLOAT, roundingPower, {std::string("decoration:rounding_power")}, WINDOW_RULE_EFFECT_ROUNDING_POWER)
+        DEFINE_PROP(Config::FLOAT, scrollMouse, {std::string("input:scroll_factor")}, WINDOW_RULE_EFFECT_SCROLL_MOUSE)
+        DEFINE_PROP(Config::FLOAT, scrollTouchpad, {std::string("input:touchpad:scroll_factor")}, WINDOW_RULE_EFFECT_SCROLL_TOUCHPAD)
 
         DEFINE_PROP(std::string, animationStyle, std::string(""), WINDOW_RULE_EFFECT_ANIMATION)
 
@@ -141,6 +145,7 @@ namespace Desktop::Rule {
 
       private:
         PHLWINDOWREF                          m_window;
+        std::vector<SP<CWindowRule>>          m_execRules;
         std::underlying_type_t<eRuleProperty> propsToRecheck = RULE_PROP_NONE;
 
         struct SRuleResult {

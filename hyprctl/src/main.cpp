@@ -33,6 +33,9 @@ using namespace Hyprutils::Memory;
 #include "Strings.hpp"
 #include "hyprpaper/Hyprpaper.hpp"
 
+#include <readline/readline.h>
+#include <readline/history.h>
+
 std::string instanceSignature;
 bool        quiet = false;
 
@@ -251,6 +254,9 @@ int request(std::string_view arg, int minArgs = 0, bool needRoll = false) {
     close(SERVERSOCKET);
 
     log(reply);
+
+    if (reply.starts_with("error:"))
+        return 7;
 
     return 0;
 }
@@ -526,11 +532,29 @@ int main(int argc, char** argv) {
         exitStatus = request(fullRequest, 2);
     else if (fullRequest.contains("/decorations"))
         exitStatus = request(fullRequest, 1);
+    else if (fullRequest.contains("/eval"))
+        exitStatus = request(fullRequest, 1);
     else if (fullRequest.contains("/--help"))
         std::println("{}", USAGE);
     else if (fullRequest.contains("/rollinglog") && needRoll)
         exitStatus = request(fullRequest, 0, true);
-    else {
+    else if (fullRequest.contains("/repl")) {
+        if (ARGS.size() > 1) {
+            // single command with output
+            exitStatus = request(fullRequest, 1);
+        } else {
+            // interactive REPL mode
+            char* input = nullptr;
+            while ((input = readline("> ")) != nullptr) {
+                std::string line(input);
+                if (!line.empty()) {
+                    exitStatus = request("/repl " + line);
+                    add_history(input);
+                }
+                free(input);
+            }
+        }
+    } else {
         exitStatus = request(fullRequest);
     }
 

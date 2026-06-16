@@ -14,6 +14,7 @@
 #include "../render/OpenGL.hpp"
 #include "../Compositor.hpp"
 #include "../event/EventBus.hpp"
+#include "../state/MonitorState.hpp"
 
 using namespace Hyprutils::OS;
 
@@ -27,7 +28,7 @@ static std::optional<dev_t> devIDFromFD(int fd) {
 CDMABUFFormatTable::CDMABUFFormatTable(SDMABUFTranche _rendererTranche, std::vector<std::pair<PHLMONITORREF, SDMABUFTranche>> tranches_) :
     m_rendererTranche(_rendererTranche), m_monitorTranches(tranches_) {
 
-    static const auto                       PSKIP_NON_KMS = CConfigValue<Hyprlang::INT>("quirks:skip_non_kms_dmabuf_formats");
+    static const auto                       PSKIP_NON_KMS = CConfigValue<Config::INTEGER>("quirks:skip_non_kms_dmabuf_formats");
 
     std::vector<SDMABUFFormatTableEntry>    formatsVec;
     std::set<std::pair<uint32_t, uint64_t>> formats;
@@ -49,8 +50,7 @@ CDMABUFFormatTable::CDMABUFFormatTable(SDMABUFTranche _rendererTranche, std::vec
                     continue;
                 }
             }
-            auto format        = std::make_pair<>(fmt.drmFormat, mod);
-            auto [_, inserted] = formats.insert(format);
+            auto [_, inserted] = formats.emplace(fmt.drmFormat, mod);
             if (inserted) {
                 // if it was inserted into set, then its unique and will have a new index in vec
                 m_rendererTranche.indices.push_back(i++);
@@ -76,8 +76,7 @@ CDMABUFFormatTable::CDMABUFFormatTable(SDMABUFTranche _rendererTranche, std::vec
                 // apparently these can implode on planes, so don't use them
                 if (mod == DRM_FORMAT_MOD_INVALID || mod == DRM_FORMAT_MOD_LINEAR)
                     continue;
-                auto format        = std::make_pair<>(fmt.drmFormat, mod);
-                auto [_, inserted] = formats.insert(format);
+                auto [_, inserted] = formats.emplace(fmt.drmFormat, mod);
                 if (inserted) {
                     tranche.indices.push_back(i++);
                     formatsVec.push_back(SDMABUFFormatTableEntry{
@@ -461,13 +460,13 @@ CLinuxDMABufV1Protocol::CLinuxDMABufV1Protocol(const wl_interface* iface, const 
             // this assumes there's only 1 device used for both scanout and rendering
             // also that each monitor never changes its primary plane
 
-            for (auto const& mon : g_pCompositor->m_monitors) {
+            for (auto const& mon : State::monitorState()->monitors()) {
                 auto tranche = SDMABUFTranche{
                     .device  = m_mainDevice,
                     .flags   = ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_FLAGS_SCANOUT,
                     .formats = mon->m_output->getRenderFormats(),
                 };
-                tches.emplace_back(std::make_pair<>(mon, tranche));
+                tches.emplace_back(mon, tranche);
             }
 
             static auto monitorAdded = Event::bus()->m_events.monitor.added.listen([this](PHLMONITOR mon) {
@@ -476,7 +475,7 @@ CLinuxDMABufV1Protocol::CLinuxDMABufV1Protocol(const wl_interface* iface, const 
                     .flags   = ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_FLAGS_SCANOUT,
                     .formats = mon->m_output->getRenderFormats(),
                 };
-                m_formatTable->m_monitorTranches.emplace_back(std::make_pair<>(mon, tranche));
+                m_formatTable->m_monitorTranches.emplace_back(mon, tranche);
                 resetFormatTable();
             });
 
@@ -486,7 +485,7 @@ CLinuxDMABufV1Protocol::CLinuxDMABufV1Protocol(const wl_interface* iface, const 
             });
 
             static auto configReloaded = Event::bus()->m_events.config.reloaded.listen([this] {
-                static const auto PSKIP_NON_KMS = CConfigValue<Hyprlang::INT>("quirks:skip_non_kms_dmabuf_formats");
+                static const auto PSKIP_NON_KMS = CConfigValue<Config::INTEGER>("quirks:skip_non_kms_dmabuf_formats");
                 static auto       prev          = *PSKIP_NON_KMS;
                 if (prev != *PSKIP_NON_KMS) {
                     prev = *PSKIP_NON_KMS;

@@ -5,11 +5,13 @@
 #include "../../../target/WindowTarget.hpp"
 
 #include "../../../../config/ConfigValue.hpp"
+#include "../../../../config/shared/actions/ConfigActions.hpp"
 #include "../../../../config/shared/workspace/WorkspaceRuleManager.hpp"
 #include "../../../../desktop/state/FocusState.hpp"
-#include "../../../../helpers/Monitor.hpp"
+#include "../../../../output/Monitor.hpp"
 #include "../../../../Compositor.hpp"
 #include "../../../../render/Renderer.hpp"
+#include "../../../../state/MonitorState.hpp"
 
 #include <hyprutils/utils/ScopeGuard.hpp>
 #include <hyprutils/string/VarList2.hpp>
@@ -18,24 +20,14 @@ using namespace Layout;
 using namespace Layout::Tiled;
 using namespace Hyprutils::String;
 
-struct Layout::Tiled::SMasterNodeData {
-    bool        isMaster   = false;
-    float       percMaster = 0.5f;
-
-    WP<ITarget> pTarget;
-
-    Vector2D    position;
-    Vector2D    size;
-
-    float       percSize = 1.f; // size multiplier for resizing children
-
-    bool        ignoreFullscreenChecks = false;
-
-    //
-    bool operator==(const SMasterNodeData& rhs) const {
-        return pTarget.lock() == rhs.pTarget.lock();
-    }
-};
+// Center-master slaves alternate left/right columns starting on the fallback side, so an odd
+// count puts the extra slave there: left by default, right when extraToRight. calculateWorkspace
+// and resizeTarget must both split via this or they disagree for odd counts. Returns {left, right}.
+static std::pair<int, int> centerSlaveColumns(int slaveCount, bool extraToRight) {
+    const int LARGER  = 1 + (slaveCount - 1) / 2; // ceil, holds the odd one
+    const int SMALLER = slaveCount - LARGER;
+    return extraToRight ? std::pair{SMALLER, LARGER} : std::pair{LARGER, SMALLER};
+}
 
 void CMasterAlgorithm::newTarget(SP<ITarget> target) {
     addTarget(target, true);
@@ -47,7 +39,7 @@ void CMasterAlgorithm::movedTarget(SP<ITarget> target, std::optional<Vector2D> f
 
 void CMasterAlgorithm::addTarget(SP<ITarget> target, bool firstMap) {
     static auto PNEWONACTIVE = CConfigValue<std::string>("master:new_on_active");
-    static auto PNEWONTOP    = CConfigValue<Hyprlang::INT>("master:new_on_top");
+    static auto PNEWONTOP    = CConfigValue<Config::INTEGER>("master:new_on_top");
     static auto PNEWSTATUS   = CConfigValue<std::string>("master:new_status");
 
     const auto  PWORKSPACE = m_parent->space()->workspace();
@@ -79,7 +71,7 @@ void CMasterAlgorithm::addTarget(SP<ITarget> target, bool firstMap) {
     PNODE->pTarget = target;
 
     const auto   WINDOWSONWORKSPACE = getNodesNo();
-    static auto  PMFACT             = CConfigValue<Hyprlang::FLOAT>("master:mfact");
+    static auto  PMFACT             = CConfigValue<Config::FLOAT>("master:mfact");
     float        lastSplitPercent   = *PMFACT;
 
     auto         OPENINGON = isWindowTiled(Desktop::focusState()->window()) && Desktop::focusState()->window()->m_workspace == PWORKSPACE ?
@@ -87,7 +79,7 @@ void CMasterAlgorithm::addTarget(SP<ITarget> target, bool firstMap) {
         getMasterNode();
 
     const auto   MOUSECOORDS   = g_pInputManager->getMouseCoordsInternal();
-    static auto  PDROPATCURSOR = CConfigValue<Hyprlang::INT>("master:drop_at_cursor");
+    static auto  PDROPATCURSOR = CConfigValue<Config::INTEGER>("master:drop_at_cursor");
     eOrientation orientation   = getDynamicOrientation();
     const auto   NODEIT        = std::ranges::find(m_masterNodesData, PNODE);
 
@@ -97,7 +89,7 @@ void CMasterAlgorithm::addTarget(SP<ITarget> target, bool firstMap) {
         if (WINDOWSONWORKSPACE > 2) {
             auto&             v = m_masterNodesData;
 
-            const std::size_t srcIndex = static_cast<std::size_t>(std::distance(v.begin(), NODEIT));
+            const std::size_t srcIndex = sc<std::size_t>(std::distance(v.begin(), NODEIT));
 
             for (std::size_t i = 0; i < v.size(); ++i) {
                 const CBox box = v[i]->pTarget->position();
@@ -131,8 +123,8 @@ void CMasterAlgorithm::addTarget(SP<ITarget> target, bool firstMap) {
                     break;
 
                 auto node = std::move(v[srcIndex]);
-                v.erase(v.begin() + static_cast<std::ptrdiff_t>(srcIndex));
-                v.insert(v.begin() + static_cast<std::ptrdiff_t>(insertIndex), std::move(node));
+                v.erase(v.begin() + sc<std::ptrdiff_t>(srcIndex));
+                v.insert(v.begin() + sc<std::ptrdiff_t>(insertIndex), std::move(node));
 
                 break;
             }
@@ -222,9 +214,12 @@ void CMasterAlgorithm::addTarget(SP<ITarget> target, bool firstMap) {
 
 void CMasterAlgorithm::removeTarget(SP<ITarget> target) {
     const auto  MASTERSLEFT = getMastersNo();
-    static auto SMALLSPLIT  = CConfigValue<Hyprlang::INT>("master:allow_small_split");
+    static auto SMALLSPLIT  = CConfigValue<Config::INTEGER>("master:allow_small_split");
 
     const auto  PNODE = getNodeFromTarget(target);
+
+    if (!PNODE)
+        return;
 
     if (target->fullscreenMode() != FSMODE_NONE)
         g_pCompositor->setWindowFullscreenInternal(target->window(), FSMODE_NONE);
@@ -269,8 +264,8 @@ void CMasterAlgorithm::resizeTarget(const Vector2D& Δ, SP<ITarget> target, eRec
         return;
 
     const auto   PMONITOR            = m_parent->space()->workspace()->m_monitor;
-    static auto  SLAVECOUNTFORCENTER = CConfigValue<Hyprlang::INT>("master:slave_count_for_center_master");
-    static auto  PSMARTRESIZING      = CConfigValue<Hyprlang::INT>("master:smart_resizing");
+    static auto  SLAVECOUNTFORCENTER = CConfigValue<Config::INTEGER>("master:slave_count_for_center_master");
+    static auto  PSMARTRESIZING      = CConfigValue<Config::INTEGER>("master:smart_resizing");
 
     const auto   WORKAREA      = PMONITOR->logicalBoxMinusReserved();
     const bool   DISPLAYBOTTOM = STICKS(PNODE->position.y + PNODE->size.y, WORKAREA.y + WORKAREA.h);
@@ -323,8 +318,18 @@ void CMasterAlgorithm::resizeTarget(const Vector2D& Δ, SP<ITarget> target, eRec
     const auto RESIZEDELTA = isStackVertical ? Δ.y : Δ.x;
 
     auto       nodesInSameColumn = PNODE->isMaster ? MASTERS : STACKWINDOWS;
-    if (orientation == ORIENTATION_CENTER && !PNODE->isMaster)
-        nodesInSameColumn = DISPLAYRIGHT ? (nodesInSameColumn + 1) / 2 : nodesInSameColumn / 2;
+    if (orientation == ORIENTATION_CENTER && !PNODE->isMaster) {
+        static auto CMFALLBACK   = CConfigValue<std::string>("master:center_master_fallback");
+        const bool  EXTRATORIGHT = *CMFALLBACK == "right";
+
+        // slaves alternate columns from the fallback side, so even slave index == fallback side
+        const auto NODEIT     = std::ranges::find(m_masterNodesData, PNODE);
+        const int  SLAVEINDEX = std::count_if(m_masterNodesData.begin(), NODEIT, [](const auto& n) { return !n->isMaster; });
+        const bool ONLEFT     = (SLAVEINDEX % 2 == 0) != EXTRATORIGHT;
+
+        const auto [SLAVESLEFT, SLAVESRIGHT] = centerSlaveColumns(STACKWINDOWS, EXTRATORIGHT);
+        nodesInSameColumn                    = ONLEFT ? SLAVESLEFT : SLAVESRIGHT;
+    }
 
     const auto SIZE = isStackVertical ? WORKAREA.h / nodesInSameColumn : WORKAREA.w / nodesInSameColumn;
 
@@ -405,7 +410,7 @@ void CMasterAlgorithm::swapTargets(SP<ITarget> a, SP<ITarget> b) {
 }
 
 void CMasterAlgorithm::moveTargetInDirection(SP<ITarget> t, Math::eDirection dir, bool silent) {
-    static auto PMONITORFALLBACK = CConfigValue<Hyprlang::INT>("binds:window_direction_monitor_fallback");
+    static auto PMONITORFALLBACK = CConfigValue<Config::INTEGER>("binds:window_direction_monitor_fallback");
 
     const auto  PWINDOW2 = g_pCompositor->getWindowInDirection(t->window(), dir);
 
@@ -416,7 +421,7 @@ void CMasterAlgorithm::moveTargetInDirection(SP<ITarget> t, Math::eDirection dir
 
     if (!PWINDOW2 && t->space() && t->space()->workspace()) {
         // try to find a monitor in dir
-        const auto PMONINDIR = g_pCompositor->getMonitorInDirection(t->space()->workspace()->m_monitor.lock(), dir);
+        const auto PMONINDIR = State::monitorState()->query().relativeTo(t->space()->workspace()->m_monitor.lock()).inDirection(dir).run();
         if (PMONINDIR)
             targetWs = PMONINDIR->m_activeWorkspace;
     } else
@@ -442,11 +447,11 @@ void CMasterAlgorithm::moveTargetInDirection(SP<ITarget> t, Math::eDirection dir
     }
 }
 
-void CMasterAlgorithm::recalculate() {
+void CMasterAlgorithm::recalculate(eRecalculateReason reason) {
     calculateWorkspace();
 }
 
-std::expected<void, std::string> CMasterAlgorithm::layoutMsg(const std::string_view& sv) {
+Config::ErrorResult CMasterAlgorithm::layoutMsg(const std::string_view& sv) {
     auto switchToWindow = [&](SP<ITarget> target) {
         if (!target || !validMapped(target->window()))
             return;
@@ -459,11 +464,15 @@ std::expected<void, std::string> CMasterAlgorithm::layoutMsg(const std::string_v
         g_pInputManager->m_forcedFocus.reset();
     };
 
-    CVarList2 vars(std::string{sv}, 0, 's');
+    CVarList2  vars(std::string{sv}, 0, 's');
+
+    const auto invalidArg = [](std::string msg) { return Config::configError(std::move(msg), Config::eConfigErrorLevel::ERROR, Config::eConfigErrorCode::INVALID_ARGUMENT); };
+    const auto noTarget   = [](std::string msg) { return Config::configError(std::move(msg), Config::eConfigErrorLevel::WARNING, Config::eConfigErrorCode::NO_TARGET); };
+    const auto stateErr   = [](std::string msg) { return Config::configError(std::move(msg), Config::eConfigErrorLevel::WARNING, Config::eConfigErrorCode::INVALID_STATE); };
 
     if (vars.size() < 1 || vars[0].empty()) {
         Log::logger->log(Log::ERR, "layoutmsg called without params");
-        return std::unexpected("layoutmsg without params");
+        return invalidArg("layoutmsg without params");
     }
 
     auto command = vars[0];
@@ -479,21 +488,23 @@ std::expected<void, std::string> CMasterAlgorithm::layoutMsg(const std::string_v
 
     if (command == "swapwithmaster") {
         if (!PWINDOW)
-            return std::unexpected("No focused window");
+            return noTarget("No focused window");
 
         if (!isWindowTiled(PWINDOW))
-            return std::unexpected("focused window isn't tiled");
+            return stateErr("focused window isn't tiled");
 
         const auto PMASTER = getMasterNode();
 
         if (!PMASTER)
-            return std::unexpected("no master node");
+            return stateErr("no master node");
 
         const auto NEWCHILD = PMASTER->pTarget.lock();
+        if (!NEWCHILD)
+            return stateErr("master target expired");
 
         const bool IGNORE_IF_MASTER = vars.size() >= 2 && std::ranges::any_of(vars, [](const auto& e) { return e == "ignoremaster"; });
 
-        if (PMASTER->pTarget.lock() != PWINDOW->layoutTarget()) {
+        if (NEWCHILD != PWINDOW->layoutTarget()) {
             const auto& NEWMASTER       = PWINDOW->layoutTarget();
             const bool  newFocusToChild = vars.size() >= 2 && vars[1] == "child";
             g_layoutManager->switchTargets(NEWMASTER, NEWCHILD);
@@ -521,17 +532,21 @@ std::expected<void, std::string> CMasterAlgorithm::layoutMsg(const std::string_v
     // * auto (default) - swap the focus with the first child, if the current focus was master, otherwise focus master
     else if (command == "focusmaster") {
         if (!PWINDOW)
-            return std::unexpected("no focused window");
+            return noTarget("no focused window");
 
         const auto PMASTER = getMasterNode();
 
         if (!PMASTER)
-            return std::unexpected("no master");
+            return stateErr("no master");
 
         const auto& ARG = vars[1]; // returns empty string if out of bounds
 
-        if (PMASTER->pTarget.lock() != PWINDOW->layoutTarget()) {
-            switchToWindow(PMASTER->pTarget.lock());
+        const auto  TARGET = PMASTER->pTarget.lock();
+        if (!TARGET)
+            return stateErr("master target expired");
+
+        if (TARGET != PWINDOW->layoutTarget()) {
+            switchToWindow(TARGET);
             // save previously focused window (only for `previous` mode)
             if (ARG == "previous")
                 m_workspaceData.focusMasterPrev = PWINDOW->layoutTarget();
@@ -559,24 +574,24 @@ std::expected<void, std::string> CMasterAlgorithm::layoutMsg(const std::string_v
             focusAuto();
     } else if (command == "cyclenext") {
         if (!PWINDOW)
-            return std::unexpected("no window");
+            return noTarget("no window");
 
         const bool NOLOOP      = vars.size() >= 2 && vars[1] == "noloop";
         const auto PNEXTWINDOW = getNextTarget(PWINDOW->layoutTarget(), true, !NOLOOP);
         switchToWindow(PNEXTWINDOW);
     } else if (command == "cycleprev") {
         if (!PWINDOW)
-            return std::unexpected("no window");
+            return noTarget("no window");
 
         const bool NOLOOP      = vars.size() >= 2 && vars[1] == "noloop";
         const auto PPREVWINDOW = getNextTarget(PWINDOW->layoutTarget(), false, !NOLOOP);
         switchToWindow(PPREVWINDOW);
     } else if (command == "swapnext") {
         if (!validMapped(PWINDOW))
-            return std::unexpected("no window");
+            return noTarget("no window");
 
         if (PWINDOW->layoutTarget()->floating()) {
-            g_pKeybindManager->m_dispatchers["swapnext"]("");
+            Config::Actions::swapNext(true);
             return {};
         }
 
@@ -590,10 +605,10 @@ std::expected<void, std::string> CMasterAlgorithm::layoutMsg(const std::string_v
         }
     } else if (command == "swapprev") {
         if (!validMapped(PWINDOW))
-            return std::unexpected("no window");
+            return noTarget("no window");
 
         if (PWINDOW->layoutTarget()->floating()) {
-            g_pKeybindManager->m_dispatchers["swapnext"]("prev");
+            Config::Actions::swapNext(false);
             return {};
         }
 
@@ -607,19 +622,19 @@ std::expected<void, std::string> CMasterAlgorithm::layoutMsg(const std::string_v
         }
     } else if (command == "addmaster") {
         if (!validMapped(PWINDOW))
-            return std::unexpected("no window");
+            return noTarget("no window");
 
         if (PWINDOW->layoutTarget()->floating())
-            return std::unexpected("window is floating");
+            return stateErr("window is floating");
 
         const auto  PNODE = getNodeFromTarget(PWINDOW->layoutTarget());
 
         const auto  WINDOWS    = getNodesNo();
         const auto  MASTERS    = getMastersNo();
-        static auto SMALLSPLIT = CConfigValue<Hyprlang::INT>("master:allow_small_split");
+        static auto SMALLSPLIT = CConfigValue<Config::INTEGER>("master:allow_small_split");
 
         if (MASTERS + 2 > WINDOWS && *SMALLSPLIT == 0)
-            return std::unexpected("nothing to do");
+            return stateErr("nothing to do");
 
         g_pCompositor->setWindowFullscreenInternal(PWINDOW, FSMODE_NONE);
 
@@ -640,10 +655,10 @@ std::expected<void, std::string> CMasterAlgorithm::layoutMsg(const std::string_v
     } else if (command == "removemaster") {
 
         if (!validMapped(PWINDOW))
-            return std::unexpected("no window");
+            return noTarget("no window");
 
         if (PWINDOW->layoutTarget()->floating())
-            return std::unexpected("window isnt tiled");
+            return stateErr("window isnt tiled");
 
         const auto PNODE = getNodeFromTarget(PWINDOW->layoutTarget());
 
@@ -651,7 +666,7 @@ std::expected<void, std::string> CMasterAlgorithm::layoutMsg(const std::string_v
         const auto MASTERS = getMastersNo();
 
         if (WINDOWS < 2 || MASTERS < 2)
-            return std::unexpected("nothing to do");
+            return stateErr("nothing to do");
 
         g_pCompositor->setWindowFullscreenInternal(PWINDOW, FSMODE_NONE);
 
@@ -670,7 +685,7 @@ std::expected<void, std::string> CMasterAlgorithm::layoutMsg(const std::string_v
         calculateWorkspace();
     } else if (command == "orientationleft" || command == "orientationright" || command == "orientationtop" || command == "orientationbottom" || command == "orientationcenter") {
         if (!PWINDOW)
-            return std::unexpected("no window");
+            return noTarget("no window");
 
         g_pCompositor->setWindowFullscreenInternal(PWINDOW, FSMODE_NONE);
 
@@ -695,7 +710,7 @@ std::expected<void, std::string> CMasterAlgorithm::layoutMsg(const std::string_v
     } else if (command == "mfact") {
 
         if (!PWINDOW)
-            return std::unexpected("no window");
+            return noTarget("no window");
 
         const bool exact = vars[1] == "exact";
 
@@ -703,7 +718,7 @@ std::expected<void, std::string> CMasterAlgorithm::layoutMsg(const std::string_v
 
         try {
             ratio = std::stof(std::string{exact ? vars[2] : vars[1]});
-        } catch (...) { return std::unexpected("bad ratio"); }
+        } catch (...) { return invalidArg("bad ratio"); }
 
         const auto PNODE = getNodeFromWindow(PWINDOW);
 
@@ -717,18 +732,21 @@ std::expected<void, std::string> CMasterAlgorithm::layoutMsg(const std::string_v
         const auto PNODE = getNodeFromWindow(PWINDOW);
 
         if (!PNODE)
-            return std::unexpected("window couldnt be found");
+            return noTarget("window couldnt be found");
 
         const auto OLDMASTER = PNODE->isMaster ? PNODE : getMasterNode();
         if (!OLDMASTER)
-            return std::unexpected("no old master");
+            return stateErr("no old master");
 
-        auto oldMasterIt = std::ranges::find(m_masterNodesData, OLDMASTER);
+        auto        oldMasterIt = std::ranges::find(m_masterNodesData, OLDMASTER);
+
+        SP<ITarget> newFocus;
 
         for (auto& nd : m_masterNodesData) {
             if (!nd->isMaster) {
                 const auto& newMaster = nd;
                 newMaster->isMaster   = true;
+                newFocus              = newMaster->pTarget.lock();
 
                 auto newMasterIt = std::ranges::find(m_masterNodesData, newMaster);
 
@@ -737,7 +755,6 @@ std::expected<void, std::string> CMasterAlgorithm::layoutMsg(const std::string_v
                 else if (newMasterIt > oldMasterIt)
                     std::ranges::rotate(oldMasterIt, newMasterIt, std::next(newMasterIt));
 
-                switchToWindow(newMaster->pTarget.lock());
                 OLDMASTER->isMaster = false;
 
                 oldMasterIt = std::ranges::find(m_masterNodesData, OLDMASTER);
@@ -749,22 +766,27 @@ std::expected<void, std::string> CMasterAlgorithm::layoutMsg(const std::string_v
         }
 
         calculateWorkspace();
+        if (newFocus)
+            switchToWindow(newFocus);
     } else if (command == "rollprev") {
         const auto PNODE = getNodeFromWindow(PWINDOW);
 
         if (!PNODE)
-            return std::unexpected("window couldnt be found");
+            return noTarget("window couldnt be found");
 
         const auto OLDMASTER = PNODE->isMaster ? PNODE : getMasterNode();
         if (!OLDMASTER)
-            return std::unexpected("no old master");
+            return stateErr("no old master");
 
-        auto oldMasterIt = std::ranges::find(m_masterNodesData, OLDMASTER);
+        auto        oldMasterIt = std::ranges::find(m_masterNodesData, OLDMASTER);
+
+        SP<ITarget> newFocus;
 
         for (auto& nd : m_masterNodesData | std::views::reverse) {
             if (!nd->isMaster) {
                 const auto& newMaster = nd;
                 newMaster->isMaster   = true;
+                newFocus              = newMaster->pTarget.lock();
 
                 auto newMasterIt = std::ranges::find(m_masterNodesData, newMaster);
 
@@ -773,7 +795,6 @@ std::expected<void, std::string> CMasterAlgorithm::layoutMsg(const std::string_v
                 else if (newMasterIt > oldMasterIt)
                     std::ranges::rotate(oldMasterIt, newMasterIt, std::next(newMasterIt));
 
-                switchToWindow(newMaster->pTarget.lock());
                 OLDMASTER->isMaster = false;
 
                 oldMasterIt = std::ranges::find(m_masterNodesData, OLDMASTER);
@@ -785,7 +806,10 @@ std::expected<void, std::string> CMasterAlgorithm::layoutMsg(const std::string_v
         }
 
         calculateWorkspace();
-    }
+        if (newFocus)
+            switchToWindow(newFocus);
+    } else
+        return Config::configError(std::format("Unknown master layoutmsg: {}", sv), Config::eConfigErrorLevel::ERROR, Config::eConfigErrorCode::INVALID_ARGUMENT);
 
     return {};
 }
@@ -916,7 +940,7 @@ SP<SMasterNodeData> CMasterAlgorithm::getNodeFromWindow(PHLWINDOW x) {
     return x ? getNodeFromTarget(x->layoutTarget()) : nullptr;
 }
 
-SP<SMasterNodeData> CMasterAlgorithm::getNodeFromTarget(SP<ITarget> x) {
+SP<SMasterNodeData> CMasterAlgorithm::getNodeFromTarget(SP<ITarget> x) const {
     for (const auto& n : m_masterNodesData) {
         if (n->pTarget == x)
             return n;
@@ -953,10 +977,10 @@ void CMasterAlgorithm::calculateWorkspace() {
 
     eOrientation                  orientation         = getDynamicOrientation();
     bool                          centerMasterWindow  = false;
-    static auto                   SLAVECOUNTFORCENTER = CConfigValue<Hyprlang::INT>("master:slave_count_for_center_master");
+    static auto                   SLAVECOUNTFORCENTER = CConfigValue<Config::INTEGER>("master:slave_count_for_center_master");
     static auto                   CMFALLBACK          = CConfigValue<std::string>("master:center_master_fallback");
-    static auto                   PIGNORERESERVED     = CConfigValue<Hyprlang::INT>("master:center_ignores_reserved");
-    static auto                   PSMARTRESIZING      = CConfigValue<Hyprlang::INT>("master:smart_resizing");
+    static auto                   PIGNORERESERVED     = CConfigValue<Config::INTEGER>("master:center_ignores_reserved");
+    static auto                   PSMARTRESIZING      = CConfigValue<Config::INTEGER>("master:smart_resizing");
 
     const auto                    MASTERS          = getMastersNo();
     const auto                    WINDOWS          = getNodesNo();
@@ -1003,7 +1027,7 @@ void CMasterAlgorithm::calculateWorkspace() {
 
     // compute placement of master window(s)
     if (WINDOWS == 1 && !centerMasterWindow) {
-        static auto PALWAYSKEEPPOSITION = CConfigValue<Hyprlang::INT>("master:always_keep_position");
+        static auto PALWAYSKEEPPOSITION = CConfigValue<Config::INTEGER>("master:always_keep_position");
         if (*PALWAYSKEEPPOSITION) {
             const float WIDTH = WORKAREA.w * PMASTERNODE->percMaster;
             float       nextX = 0;
@@ -1158,22 +1182,16 @@ void CMasterAlgorithm::calculateWorkspace() {
             nextY += HEIGHT;
         }
     } else { // slaves for centered master window(s)
-        const float WIDTH       = ((*PIGNORERESERVED ? UNRESERVED_WIDTH : WORKAREA.w) - PMASTERNODE->size.x) / 2.0;
-        float       heightLeft  = 0;
-        float       heightLeftL = WORKAREA.h;
-        float       heightLeftR = WORKAREA.h;
-        float       nextX       = 0;
-        float       nextY       = 0;
-        float       nextYL      = 0;
-        float       nextYR      = 0;
-        bool        onRight     = *CMFALLBACK == "right";
-        int         slavesLeftL = 1 + (slavesLeft - 1) / 2;
-        int         slavesLeftR = slavesLeft - slavesLeftL;
-
-        if (onRight) {
-            slavesLeftR = 1 + (slavesLeft - 1) / 2;
-            slavesLeftL = slavesLeft - slavesLeftR;
-        }
+        const float WIDTH               = ((*PIGNORERESERVED ? UNRESERVED_WIDTH : WORKAREA.w) - PMASTERNODE->size.x) / 2.0;
+        float       heightLeft          = 0;
+        float       heightLeftL         = WORKAREA.h;
+        float       heightLeftR         = WORKAREA.h;
+        float       nextX               = 0;
+        float       nextY               = 0;
+        float       nextYL              = 0;
+        float       nextYR              = 0;
+        bool        onRight             = *CMFALLBACK == "right";
+        auto [slavesLeftL, slavesLeftR] = centerSlaveColumns(slavesLeft, onRight);
 
         const float slaveAverageHeightL     = WORKAREA.h / slavesLeftL;
         const float slaveAverageHeightR     = WORKAREA.h / slavesLeftR;
@@ -1246,7 +1264,11 @@ void CMasterAlgorithm::calculateWorkspace() {
 }
 
 SP<ITarget> CMasterAlgorithm::getNextCandidate(SP<ITarget> old) {
-    const auto MIDDLE = old->position().middle();
+    const auto FOCUS_MASTER = CConfigValue<Config::BOOL>("master:focus_master_on_close");
+    const auto MIDDLE       = old->position().middle();
+
+    if (const auto NODE = getMasterNode(); *FOCUS_MASTER && NODE)
+        return NODE->pTarget.lock();
 
     if (const auto NODE = getClosestNode(MIDDLE); NODE)
         return NODE->pTarget.lock();

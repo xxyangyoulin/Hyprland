@@ -52,6 +52,7 @@
 #include "../protocols/HyprlandSurface.hpp"
 #include "../protocols/ImageCaptureSource.hpp"
 #include "../protocols/ImageCopyCapture.hpp"
+#include "../protocols/BackgroundEffect.hpp"
 #include "../protocols/core/Seat.hpp"
 #include "../protocols/core/DataDevice.hpp"
 #include "../protocols/core/Compositor.hpp"
@@ -62,6 +63,7 @@
 #include "../protocols/ContentType.hpp"
 #include "../protocols/XDGTag.hpp"
 #include "../protocols/XDGBell.hpp"
+#include "../protocols/Hotkey.hpp"
 #include "../protocols/ExtWorkspace.hpp"
 #include "../protocols/ExtDataDevice.hpp"
 #include "../protocols/PointerWarp.hpp"
@@ -69,7 +71,7 @@
 #include "../protocols/CommitTiming.hpp"
 #include "../protocols/XDGForeignV2.hpp"
 
-#include "../helpers/Monitor.hpp"
+#include "../output/Monitor.hpp"
 #include "../event/EventBus.hpp"
 #include "../render/Renderer.hpp"
 #include "../Compositor.hpp"
@@ -97,7 +99,9 @@ void CProtocolManager::onMonitorModeChange(PHLMONITOR pMonitor) {
     else if (!ISMIRROR && (!PROTO::outputs.contains(pMonitor->m_name) || PROTO::outputs.at(pMonitor->m_name)->isDefunct())) {
         if (PROTO::outputs.contains(pMonitor->m_name))
             PROTO::outputs.erase(pMonitor->m_name);
-        PROTO::outputs.emplace(pMonitor->m_name, makeShared<CWLOutputProtocol>(&wl_output_interface, 4, std::format("WLOutput ({})", pMonitor->m_name), pMonitor->m_self.lock()));
+        auto p = PROTO::outputs.emplace(pMonitor->m_name,
+                                        makeShared<CWLOutputProtocol>(&wl_output_interface, 4, std::format("WLOutput ({})", pMonitor->m_name), pMonitor->m_self.lock()));
+        p.first->second->m_self = p.first->second;
     }
 
     if (PROTO::colorManagement && g_pCompositor->shouldChangePreferredImageDescription()) {
@@ -108,18 +112,16 @@ void CProtocolManager::onMonitorModeChange(PHLMONITOR pMonitor) {
 
 CProtocolManager::CProtocolManager() {
 
-    static const auto PENABLECM = CConfigValue<Hyprlang::INT>("render:cm_enabled");
-    static const auto PDEBUGCM  = CConfigValue<Hyprlang::INT>("debug:full_cm_proto");
-    static const auto PCMV1_2   = CConfigValue<Hyprlang::INT>("experimental:wp_cm_1_2");
-
-    static const auto PENABLECT = CConfigValue<Hyprlang::INT>("render:commit_timing_enabled");
+    static const auto PENABLECM = CConfigValue<Config::INTEGER>("render:cm_enabled");
+    static const auto PDEBUGCM  = CConfigValue<Config::INTEGER>("debug:full_cm_proto");
+    static const auto PCMV1_2   = CConfigValue<Config::INTEGER>("experimental:wp_cm_1_2");
+    static const auto PENABLECT = CConfigValue<Config::INTEGER>("render:commit_timing_enabled");
 
     // Outputs are a bit dumb, we have to agree.
     static auto P = Event::bus()->m_events.monitor.added.listen([this](PHLMONITOR M) {
         // ignore mirrored outputs. I don't think this will ever be hit as mirrors are applied after
         // this event is emitted iirc.
-        // also ignore the fallback
-        if (M->isMirror() || M == g_pCompositor->m_unsafeOutput)
+        if (M->isMirror())
             return;
 
         if (PROTO::outputs.contains(M->m_name))
@@ -154,7 +156,7 @@ CProtocolManager::CProtocolManager() {
     PROTO::cursorShape         = makeUnique<CCursorShapeProtocol>(&wp_cursor_shape_manager_v1_interface, 2, "CursorShape");
     PROTO::idleInhibit         = makeUnique<CIdleInhibitProtocol>(&zwp_idle_inhibit_manager_v1_interface, 1, "IdleInhibit");
     PROTO::relativePointer     = makeUnique<CRelativePointerProtocol>(&zwp_relative_pointer_manager_v1_interface, 1, "RelativePointer");
-    PROTO::xdgDecoration       = makeUnique<CXDGDecorationProtocol>(&zxdg_decoration_manager_v1_interface, 1, "XDGDecoration");
+    PROTO::xdgDecoration       = makeUnique<CXDGDecorationProtocol>(&zxdg_decoration_manager_v1_interface, 2, "XDGDecoration");
     PROTO::alphaModifier       = makeUnique<CAlphaModifierProtocol>(&wp_alpha_modifier_v1_interface, 1, "AlphaModifier");
     PROTO::gamma               = makeUnique<CGammaControlProtocol>(&zwlr_gamma_control_manager_v1_interface, 1, "GammaControl");
     PROTO::foreignToplevel     = makeUnique<CForeignToplevelProtocol>(&ext_foreign_toplevel_list_v1_interface, 1, "ForeignToplevel");
@@ -192,12 +194,14 @@ CProtocolManager::CProtocolManager() {
     PROTO::contentType         = makeUnique<CContentTypeProtocol>(&wp_content_type_manager_v1_interface, 1, "ContentType");
     PROTO::xdgTag              = makeUnique<CXDGToplevelTagProtocol>(&xdg_toplevel_tag_manager_v1_interface, 1, "XDGTag");
     PROTO::xdgBell             = makeUnique<CXDGSystemBellProtocol>(&xdg_system_bell_v1_interface, 1, "XDGBell");
+    PROTO::hotkey              = makeUnique<CHotkeyProtocol>(&vicinae_hotkey_manager_v1_interface, 1, "Hotkey");
     PROTO::extWorkspace        = makeUnique<CExtWorkspaceProtocol>(&ext_workspace_manager_v1_interface, 1, "ExtWorkspace");
     PROTO::extDataDevice       = makeUnique<CExtDataDeviceProtocol>(&ext_data_control_manager_v1_interface, 1, "ExtDataDevice");
     PROTO::pointerWarp         = makeUnique<CPointerWarpProtocol>(&wp_pointer_warp_v1_interface, 1, "PointerWarp");
     PROTO::fifo                = makeUnique<CFifoProtocol>(&wp_fifo_manager_v1_interface, 1, "Fifo");
     PROTO::xdgForeignExporter  = makeUnique<CXDGForeignExporterProtocolV2>(&zxdg_exporter_v2_interface, 1, "XDGForeignExporter");
     PROTO::xdgForeignImporter  = makeUnique<CXDGForeignImporterProtocolV2>(&zxdg_importer_v2_interface, 1, "XDGForeignImporter");
+    PROTO::backgroundEffect    = makeUnique<CBackgroundEffectProtocol>(&ext_background_effect_manager_v1_interface, 1, "BackgroundEffect");
 
     if (*PENABLECT)
         PROTO::commitTiming = makeUnique<CCommitTimingProtocol>(&wp_commit_timing_manager_v1_interface, 1, "CommitTiming");
@@ -301,6 +305,7 @@ CProtocolManager::~CProtocolManager() {
     PROTO::colorManagement.reset();
     PROTO::xdgTag.reset();
     PROTO::xdgBell.reset();
+    PROTO::hotkey.reset();
     PROTO::extWorkspace.reset();
     PROTO::extDataDevice.reset();
     PROTO::pointerWarp.reset();
@@ -309,6 +314,7 @@ CProtocolManager::~CProtocolManager() {
     PROTO::xdgForeignImporter.reset();
     PROTO::commitTiming.reset();
     PROTO::imageCaptureSource.reset();
+    PROTO::backgroundEffect.reset();
 
     for (auto& [_, lease] : PROTO::lease) {
         lease.reset();
@@ -365,6 +371,7 @@ bool CProtocolManager::isGlobalPrivileged(const wl_global* global) {
         PROTO::commitTiming->getGlobal(),
         PROTO::xdgForeignExporter->getGlobal(),
         PROTO::xdgForeignImporter->getGlobal(),
+        PROTO::backgroundEffect->getGlobal(),
         PROTO::sync     ? PROTO::sync->getGlobal()      : nullptr,
         PROTO::mesaDRM  ? PROTO::mesaDRM->getGlobal()   : nullptr,
         PROTO::linuxDma ? PROTO::linuxDma->getGlobal()  : nullptr,

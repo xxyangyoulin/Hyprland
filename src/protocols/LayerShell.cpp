@@ -4,7 +4,7 @@
 #include "XDGShell.hpp"
 #include "core/Compositor.hpp"
 #include "core/Output.hpp"
-#include "../helpers/Monitor.hpp"
+#include "../output/Monitor.hpp"
 
 void CLayerShellResource::SState::reset() {
     anchor        = 0;
@@ -248,6 +248,11 @@ void CLayerShellProtocol::onGetLayerSurface(CZwlrLayerShellV1* pMgr, uint32_t id
 
     SURF->m_role = makeShared<CLayerShellRole>(RESOURCE);
     g_pCompositor->m_layers.emplace_back(Desktop::View::CLayerSurface::create(RESOURCE));
+
+    if (PMONITOR) {
+        g_pCompositor->setPreferredScaleForSurface(SURF, PMONITOR->m_scale);
+        g_pCompositor->setPreferredTransformForSurface(SURF, PMONITOR->m_transform);
+    }
 
     LOGM(Log::DEBUG, "New wlr_layer_surface {:x}", (uintptr_t)RESOURCE.get());
 }

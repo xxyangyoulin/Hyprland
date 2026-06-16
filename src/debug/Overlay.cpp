@@ -6,6 +6,7 @@
 #include "../render/Renderer.hpp"
 #include "../managers/animation/AnimationManager.hpp"
 #include "../desktop/state/FocusState.hpp"
+#include "../state/MonitorState.hpp"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -109,7 +110,7 @@ COverlay::COverlay() {
 }
 
 void CMonitorOverlay::renderData(PHLMONITOR pMonitor, float durationUs) {
-    static auto PDEBUGOVERLAY = CConfigValue<Hyprlang::INT>("debug:overlay");
+    static auto PDEBUGOVERLAY = CConfigValue<Config::INTEGER>("debug:overlay");
 
     if (!*PDEBUGOVERLAY)
         return;
@@ -125,7 +126,7 @@ void CMonitorOverlay::renderData(PHLMONITOR pMonitor, float durationUs) {
 }
 
 void CMonitorOverlay::renderDataNoOverlay(PHLMONITOR pMonitor, float durationUs) {
-    static auto PDEBUGOVERLAY = CConfigValue<Hyprlang::INT>("debug:overlay");
+    static auto PDEBUGOVERLAY = CConfigValue<Config::INTEGER>("debug:overlay");
 
     if (!*PDEBUGOVERLAY)
         return;
@@ -141,7 +142,7 @@ void CMonitorOverlay::renderDataNoOverlay(PHLMONITOR pMonitor, float durationUs)
 }
 
 void CMonitorOverlay::frameData(PHLMONITOR pMonitor) {
-    static auto PDEBUGOVERLAY = CConfigValue<Hyprlang::INT>("debug:overlay");
+    static auto PDEBUGOVERLAY = CConfigValue<Config::INTEGER>("debug:overlay");
 
     if (!*PDEBUGOVERLAY)
         return;
@@ -249,7 +250,7 @@ void CMonitorOverlay::rebuildCache() {
     const float IDEALFPS = std::max(1.F, PMONITOR->m_refreshRate);
     const float TICKTPS  = ANIMATIONTICKMETRICS.avg <= 0.F ? 0.F : 1000.F / ANIMATIONTICKMETRICS.avg;
 
-    static auto FONTFAMILY = CConfigValue<std::string>("misc:font_family");
+    static auto FONTFAMILY = CConfigValue<Config::STRING>("misc:font_family");
 
     CHyprColor  fpsColor = CHyprColor{1.F, 0.2F, 0.2F, 1.F};
     if (FPS > IDEALFPS * 0.95F)
@@ -326,7 +327,7 @@ Vector2D CMonitorOverlay::size() const {
 }
 
 void COverlay::renderData(PHLMONITOR pMonitor, float durationUs) {
-    static auto PDEBUGOVERLAY = CConfigValue<Hyprlang::INT>("debug:overlay");
+    static auto PDEBUGOVERLAY = CConfigValue<Config::INTEGER>("debug:overlay");
 
     if (!*PDEBUGOVERLAY)
         return;
@@ -335,7 +336,7 @@ void COverlay::renderData(PHLMONITOR pMonitor, float durationUs) {
 }
 
 void COverlay::renderDataNoOverlay(PHLMONITOR pMonitor, float durationUs) {
-    static auto PDEBUGOVERLAY = CConfigValue<Hyprlang::INT>("debug:overlay");
+    static auto PDEBUGOVERLAY = CConfigValue<Config::INTEGER>("debug:overlay");
 
     if (!*PDEBUGOVERLAY)
         return;
@@ -344,7 +345,7 @@ void COverlay::renderDataNoOverlay(PHLMONITOR pMonitor, float durationUs) {
 }
 
 void COverlay::frameData(PHLMONITOR pMonitor) {
-    static auto PDEBUGOVERLAY = CConfigValue<Hyprlang::INT>("debug:overlay");
+    static auto PDEBUGOVERLAY = CConfigValue<Config::INTEGER>("debug:overlay");
 
     if (!*PDEBUGOVERLAY)
         return;
@@ -362,7 +363,7 @@ void COverlay::createWarningTexture(float maxW) {
     if (maxW == m_warningTextureMaxW)
         return;
 
-    static auto FONT = CConfigValue<std::string>("misc:font_family");
+    static auto FONT = CConfigValue<Config::STRING>("misc:font_family");
 
     m_warningTexture = g_pHyprRenderer->renderText(Hyprgraphics::CTextResource::STextResourceData{
         .text     = "[!] FPS might be below your monitor's refresh rate if there are no content updates",
@@ -374,10 +375,10 @@ void COverlay::createWarningTexture(float maxW) {
 }
 
 void COverlay::draw() {
-    if (g_pCompositor->m_monitors.empty())
+    if (State::monitorState()->monitors().empty())
         return;
 
-    const auto PMONITOR = g_pCompositor->m_monitors.front();
+    const auto PMONITOR = State::monitorState()->monitors().front();
     if (!PMONITOR)
         return;
 
@@ -396,7 +397,7 @@ void COverlay::draw() {
         Vector2D fullSize                = {};
         int      monitorsWithOverlayData = 0;
 
-        for (const auto& m : g_pCompositor->m_monitors) {
+        for (const auto& m : State::monitorState()->monitors()) {
             const Vector2D size = m_monitorOverlays[m].size();
             if (size.x <= 0 || size.y <= 0)
                 continue;
@@ -429,7 +430,7 @@ void COverlay::draw() {
         }
     }
 
-    for (auto const& monitor : g_pCompositor->m_monitors) {
+    for (auto const& monitor : State::monitorState()->monitors()) {
         bool monitorUpdated = false;
         offsetY += m_monitorOverlays[monitor].draw(offsetY, monitorUpdated);
         cacheUpdated = cacheUpdated || monitorUpdated;
@@ -497,7 +498,7 @@ void COverlay::draw() {
     }
 
     if (m_frameTimer.getMillis() >= OVERLAY_REFRESH_INTERVAL_MS) {
-        g_pCompositor->scheduleFrameForMonitor(PMONITOR);
+        PMONITOR->scheduleFrame();
         m_frameTimer.reset();
     }
 }

@@ -9,6 +9,7 @@
 #include "../../layout/LayoutManager.hpp"
 #include "../../desktop/state/FocusState.hpp"
 #include "../../Compositor.hpp"
+#include "managers/EventManager.hpp"
 
 #include <algorithm>
 
@@ -60,6 +61,8 @@ void CGroup::init() {
     }
 
     updateWindowVisibility();
+
+    g_pEventManager->postEvent(SHyprIPCEvent({.event = "togglegroup", .data = std::format("1,{:x}", rc<uintptr_t>(m_windows.at(0).get()))}));
 }
 
 void CGroup::destroy() {
@@ -71,6 +74,8 @@ void CGroup::destroy() {
 
         remove(m_windows.at(0).lock());
     }
+
+    g_pEventManager->postEvent(SHyprIPCEvent({.event = "togglegroup", .data = std::format("0,{:x}", rc<uintptr_t>(m_windows.at(0).get()))}));
 }
 
 CGroup::~CGroup() {
@@ -84,7 +89,7 @@ bool CGroup::has(PHLWINDOW w) const {
 }
 
 void CGroup::add(PHLWINDOW w) {
-    static auto INSERT_AFTER_CURRENT = CConfigValue<Hyprlang::INT>("group:insert_after_current");
+    static auto INSERT_AFTER_CURRENT = CConfigValue<Config::INTEGER>("group:insert_after_current");
 
     if (w->m_group) {
         if (w->m_group == m_self)
@@ -109,6 +114,12 @@ void CGroup::add(PHLWINDOW w) {
     w->m_target->setSpaceGhost(m_target->space());
     w->m_target->setFloating(m_target->floating());
 
+    // a window in a group lives on the group's monitor/workspace
+    if (const auto WS = m_target->workspace(); WS && w->m_monitor != WS->m_monitor) {
+        w->m_monitor = WS->m_monitor;
+        w->moveToWorkspace(WS);
+    }
+
     if (*INSERT_AFTER_CURRENT) {
         m_windows.insert(m_windows.begin() + m_current + 1, w);
         m_current++;
@@ -122,7 +133,7 @@ void CGroup::add(PHLWINDOW w) {
     m_target->recalc();
 }
 
-void CGroup::remove(PHLWINDOW w, Math::eDirection dir) {
+void CGroup::remove(PHLWINDOW w, Math::eDirection dir, eRemoveFromGroupReason reason) {
     std::optional<size_t> idx;
     for (size_t i = 0; i < m_windows.size(); ++i) {
         if (m_windows.at(i) == w) {
@@ -142,7 +153,8 @@ void CGroup::remove(PHLWINDOW w, Math::eDirection dir) {
     w->m_group.reset();
     removeWindowDecos(w);
 
-    w->setHidden(false);
+    w->setInputBlocked(INPUT_BLOCK_GROUP_INACTIVE, false);
+    *w->alpha(WINDOW_ALPHA_LAYOUT) = 1.F;
 
     const bool REMOVING_GROUP = m_windows.size() <= 1;
 
@@ -170,6 +182,10 @@ void CGroup::remove(PHLWINDOW w, Math::eDirection dir) {
                 default: break;
             }
         }
+
+        // We don't need to assign a window to a new space if we intend to unmap it
+        if (reason == REMOVE_FROM_GROUP_REASON_UNMAP_WINDOW)
+            return;
         w->m_target->assignToSpace(m_target->space(), focalPoint);
     }
 }
@@ -214,7 +230,7 @@ void CGroup::setCurrent(size_t idx) {
     }
 
     if (WASFOCUS)
-        Desktop::focusState()->rawWindowFocus(current(), FOCUS_REASON_DESKTOP_STATE_CHANGE);
+        Desktop::focusState()->rawWindowFocus(current(), FOCUS_REASON_GROUP_CURRENT_WINDOW_CHANGE);
 }
 
 void CGroup::setCurrent(PHLWINDOW w) {
@@ -280,12 +296,16 @@ void CGroup::updateWindowVisibility() {
     for (size_t i = 0; i < m_windows.size(); ++i) {
         if (i == m_current) {
             auto& x = m_windows.at(i);
-            x->setHidden(false);
+            x->setInputBlocked(INPUT_BLOCK_GROUP_INACTIVE, false);
+            *x->alpha(WINDOW_ALPHA_LAYOUT) = 1.F;
             x->m_ruleApplicator->propertiesChanged(Desktop::Rule::RULE_PROP_GROUP | Desktop::Rule::RULE_PROP_ON_WORKSPACE);
             x->updateWindowDecos();
             x->updateDecorationValues();
-        } else
-            m_windows.at(i)->setHidden(true);
+        } else {
+            auto& x = m_windows.at(i);
+            x->setInputBlocked(INPUT_BLOCK_GROUP_INACTIVE, true);
+            *x->alpha(WINDOW_ALPHA_LAYOUT) = 0.F;
+        }
     }
 
     m_target->recalc();

@@ -7,7 +7,8 @@
 #include "../../Compositor.hpp"
 #include "../../render/Renderer.hpp"
 #include "../../render/OpenGL.hpp"
-#include "../../helpers/Monitor.hpp"
+#include "../../output/Monitor.hpp"
+#include "../../state/MonitorState.hpp"
 #include "../../desktop/view/Window.hpp"
 #include "../../desktop/state/FocusState.hpp"
 #include "../../render/pass/ClearPassElement.hpp"
@@ -18,6 +19,7 @@
 
 using namespace Hyprgraphics::Egl;
 using namespace Screenshare;
+using namespace Desktop::View;
 
 CScreenshareFrame::CScreenshareFrame(WP<CScreenshareSession> session, bool overlayCursor, bool isFirst) :
     m_session(session), m_bufferSize(m_session->bufferSize()), m_overlayCursor(overlayCursor), m_isFirst(isFirst) {
@@ -28,8 +30,11 @@ CScreenshareFrame::~CScreenshareFrame() {
     if (m_failed || !m_shared)
         return;
 
-    if (!m_copied && m_callback)
-        m_callback(RESULT_NOT_COPIED);
+    if (!m_copied && m_callback) {
+        FScreenshareCallback cb;
+        std::swap(cb, m_callback);
+        cb(RESULT_NOT_COPIED);
+    }
 }
 
 bool CScreenshareFrame::done() const {
@@ -67,7 +72,7 @@ eScreenshareError CScreenshareFrame::share(SP<IHLBuffer> buffer, const CRegion& 
     if UNLIKELY (done())
         return ERROR_STOPPED;
 
-    if UNLIKELY (!m_session->monitor() || !g_pCompositor->monitorExists(m_session->monitor())) {
+    if UNLIKELY (!m_session->monitor() || !State::monitorState()->contains(m_session->monitor())) {
         LOGM(Log::ERR, "Client requested sharing of a monitor that is gone");
         m_failed = true;
         return ERROR_STOPPED;
@@ -108,10 +113,18 @@ eScreenshareError CScreenshareFrame::share(SP<IHLBuffer> buffer, const CRegion& 
     m_callback = callback;
     m_shared   = true;
 
+    if (m_session->m_type == SHARE_MONITOR || m_session->m_type == SHARE_REGION) {
+        const auto PMONITOR = m_session->monitor();
+        if (PMONITOR)
+            PMONITOR->addDamage(PMONITOR->resources()->pendingMirrorFBDamage());
+    }
+
     // schedule a frame so that when a screenshare starts it isn't black until the output is updated
     if (m_isFirst) {
-        g_pCompositor->scheduleFrameForMonitor(m_session->monitor(), Aquamarine::IOutput::AQ_SCHEDULE_NEEDS_FRAME);
-        g_pHyprRenderer->damageMonitor(m_session->monitor());
+        const auto PMONITOR = m_session->monitor();
+        if (PMONITOR)
+            PMONITOR->scheduleFrame(Aquamarine::IOutput::AQ_SCHEDULE_NEEDS_FRAME);
+        g_pHyprRenderer->damageMonitor(PMONITOR);
     }
 
     // TODO: add a damage ring for output damage since last shared frame
@@ -195,11 +208,10 @@ void CScreenshareFrame::renderMonitor() {
     g_pHyprRenderer->startRenderPass();
     g_pHyprRenderer->draw(
         CTexPassElement::SRenderData{
-            .tex                = TEXTURE,
-            .box                = monbox,
-            .flipEndFrame       = true,
-            .cmBackToSRGB       = !IS_CM_AWARE,
-            .cmBackToSRGBSource = !IS_CM_AWARE ? PMONITOR : nullptr,
+            .tex          = TEXTURE,
+            .box          = monbox,
+            .flipEndFrame = true,
+            .cmBackToSRGB = !IS_CM_AWARE,
         },
         {0, 0, PMONITOR->m_pixelSize.x, PMONITOR->m_pixelSize.y});
     g_pHyprRenderer->m_renderData.renderModif.enabled = OLD;
@@ -259,7 +271,7 @@ void CScreenshareFrame::renderMonitor() {
 
         const auto PWORKSPACE = w->m_workspace;
 
-        if UNLIKELY (!PWORKSPACE && !w->m_fadingOut && w->m_alpha->value() != 0.f)
+        if UNLIKELY (!PWORKSPACE && !w->m_fadingOut && w->alphaValue(WINDOW_ALPHA_FADE) * w->alphaValue(WINDOW_ALPHA_FULLSCREEN) != 0.f)
             continue;
 
         const auto renderOffset     = PWORKSPACE && !w->m_pinned ? PWORKSPACE->m_renderOffset->value() : Vector2D{};
@@ -441,6 +453,7 @@ bool CScreenshareFrame::copyShm() {
     if (!m_copied) {
         LOGM(Log::TRACE, "Copied frame via shm");
         m_callback(RESULT_COPIED);
+        m_copied = true;
     }
 
     return true;

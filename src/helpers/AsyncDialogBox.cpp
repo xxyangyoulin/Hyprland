@@ -131,7 +131,7 @@ SP<CPromise<std::string>> CAsyncDialogBox::open() {
     }
 
     m_dialogPid = proc.pid();
-    asyncDialogBoxes.emplace_back(std::make_pair<>(m_dialogPid, m_selfWeakReference));
+    asyncDialogBoxes.emplace_back(m_dialogPid, m_selfWeakReference);
 
     // close the write fd, only the dialog owns it now
     close(outPipe[1]);
@@ -161,7 +161,12 @@ SP<CAsyncDialogBox> CAsyncDialogBox::lockSelf() {
 }
 
 void CAsyncDialogBox::setExecRule(std::string&& s) {
-    auto rule       = Desktop::Rule::CWindowRule::buildFromExecString(std::move(s));
-    m_execRuleToken = rule->execToken();
-    Desktop::Rule::ruleEngine()->registerRule(std::move(rule));
+    auto rule = Desktop::Rule::CWindowRule::buildFromExecString(std::move(s));
+    if (!rule) {
+        Log::logger->log(Log::ERR, "CAsyncDialogBox: failed to parse exec rule: {}", rule.error());
+        return;
+    }
+
+    m_execRuleToken = (*rule)->execToken();
+    Desktop::Rule::ruleEngine()->registerRule(std::move(*rule));
 }

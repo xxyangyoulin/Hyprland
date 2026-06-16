@@ -11,6 +11,7 @@
 #include "../devices/IKeyboard.hpp"
 #include "../desktop/view/LayerSurface.hpp"
 #include "../managers/input/InputManager.hpp"
+#include "../state/MonitorState.hpp"
 #include "wlr-layer-shell-unstable-v1.hpp"
 #include <algorithm>
 #include <hyprutils/utils/ScopeGuard.hpp>
@@ -120,20 +121,14 @@ void CSeatManager::setKeyboardFocus(SP<CWLSurfaceResource> surf) {
 
     m_listeners.keyboardSurfaceDestroy.reset();
 
-    if (m_state.keyboardFocusResource) {
-        auto client = m_state.keyboardFocusResource->client();
-        for (auto const& s : m_seatResources) {
-            if (s->resource->client() != client)
-                continue;
+    // Don't gate leave on m_state.keyboardFocusResource — the WP can
+    // be stale. sendLeave no-ops on keyboards without m_currentSurface.
+    for (auto const& k : PROTO::seat->m_keyboards) {
+        if (!k)
+            continue;
 
-            for (auto const& k : s->resource->m_keyboards) {
-                if (!k)
-                    continue;
-
-                k->sendMods(0, m_keyboard->m_modifiersState.latched, m_keyboard->m_modifiersState.locked, m_keyboard->m_modifiersState.group);
-                k->sendLeave();
-            }
-        }
+        k->sendMods(0, m_keyboard->m_modifiersState.latched, m_keyboard->m_modifiersState.locked, m_keyboard->m_modifiersState.group);
+        k->sendLeave();
     }
 
     m_state.keyboardFocusResource.reset();
@@ -167,7 +162,17 @@ void CSeatManager::setKeyboardFocus(SP<CWLSurfaceResource> surf) {
                 continue;
 
             k->sendEnter(surf, &keys);
-            k->sendMods(m_keyboard->m_modifiersState.depressed, m_keyboard->m_modifiersState.latched, m_keyboard->m_modifiersState.locked, m_keyboard->m_modifiersState.group);
+            uint32_t depressed = m_keyboard->m_modifiersState.depressed;
+            uint32_t latched   = m_keyboard->m_modifiersState.latched;
+            uint32_t locked    = m_keyboard->m_modifiersState.locked;
+            for (auto const& kb : g_pInputManager->m_keyboards) {
+                if (!kb->m_enabled || !kb->shareStates() || (kb->isVirtual() && g_pInputManager->shouldIgnoreVirtualKeyboard(kb)))
+                    continue;
+                depressed |= kb->m_modifiersState.depressed;
+                latched |= kb->m_modifiersState.latched;
+                locked |= kb->m_modifiersState.locked;
+            }
+            k->sendMods(depressed, latched, locked, m_keyboard->m_modifiersState.group);
         }
     }
 
@@ -232,19 +237,11 @@ void CSeatManager::setPointerFocus(SP<CWLSurfaceResource> surf, const Vector2D& 
 
     m_listeners.pointerSurfaceDestroy.reset();
 
-    if (m_state.pointerFocusResource) {
-        auto client = m_state.pointerFocusResource->client();
-        for (auto const& s : m_seatResources) {
-            if (s->resource->client() != client)
-                continue;
+    for (auto const& p : PROTO::seat->m_pointers) {
+        if (!p)
+            continue;
 
-            for (auto const& p : s->resource->m_pointers) {
-                if (!p)
-                    continue;
-
-                p->sendLeave();
-            }
-        }
+        p->sendLeave();
     }
 
     auto lastPointerFocusResource = m_state.pointerFocusResource;
@@ -663,9 +660,9 @@ void CSeatManager::setGrab(SP<CSeatGrab> grab) {
         if (parentLayer && parentLayer->m_layerSurface->m_current.interactivity != ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE) {
             Desktop::focusState()->rawSurfaceFocus(parentLayer->wlSurface()->resource());
         } else {
-            static auto PFOLLOWMOUSE = CConfigValue<Hyprlang::INT>("input:follow_mouse");
+            static auto PFOLLOWMOUSE = CConfigValue<Config::INTEGER>("input:follow_mouse");
             if (*PFOLLOWMOUSE == 0 || *PFOLLOWMOUSE == 2 || *PFOLLOWMOUSE == 3) {
-                const auto PMONITOR = g_pCompositor->getMonitorFromCursor();
+                const auto PMONITOR = State::monitorState()->query().vec(g_pInputManager->getMouseCoordsInternal()).run();
 
                 // If this was a popup grab, focus its parent window to maintain context
                 if (validMapped(parentWindow)) {
@@ -702,8 +699,12 @@ void CSeatManager::setGrab(SP<CSeatGrab> grab) {
         if (refocus) {
             auto candidate = Desktop::focusState()->window();
 
-            if (candidate)
+            if (candidate && candidate->m_workspace && candidate->m_workspace->isVisibleNotCovered())
                 Desktop::focusState()->rawWindowFocus(candidate, Desktop::FOCUS_REASON_FFM);
+            else {
+                const auto PMONITOR = State::monitorState()->query().vec(g_pInputManager->getMouseCoordsInternal()).run();
+                g_pInputManager->refocusLastWindow(PMONITOR);
+            }
         }
 
         if (oldGrab->m_onEnd)

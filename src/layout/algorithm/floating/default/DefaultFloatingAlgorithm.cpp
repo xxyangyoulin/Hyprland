@@ -6,7 +6,8 @@
 #include "../../../space/Space.hpp"
 
 #include "../../../../Compositor.hpp"
-#include "../../../../helpers/Monitor.hpp"
+#include "../../../../output/Monitor.hpp"
+#include "../../../../state/MonitorState.hpp"
 
 using namespace Layout;
 using namespace Layout::Floating;
@@ -50,10 +51,10 @@ void CDefaultFloatingAlgorithm::newTarget(SP<ITarget> target) {
         // set this here so that expressions can use it. This could be wrong of course.
         WINDOW->m_realSize->setValueAndWarp(DESIRED_GEOM ? DESIRED_GEOM->size : DEFAULT_SIZE);
 
-        if (!WINDOW->m_ruleApplicator->static_.size.empty()) {
-            const auto COMPUTED = WINDOW->calculateExpression(WINDOW->m_ruleApplicator->static_.size);
+        if (WINDOW->m_ruleApplicator->static_.size) {
+            const auto COMPUTED = WINDOW->calculateExpression(*WINDOW->m_ruleApplicator->static_.size);
             if (!COMPUTED)
-                Log::logger->log(Log::ERR, "failed to parse {} as an expression", WINDOW->m_ruleApplicator->static_.size);
+                Log::logger->log(Log::ERR, "failed to parse {} as an expression", WINDOW->m_ruleApplicator->static_.size->toString());
             else {
                 windowGeometry.w = COMPUTED->x;
                 windowGeometry.h = COMPUTED->y;
@@ -63,10 +64,10 @@ void CDefaultFloatingAlgorithm::newTarget(SP<ITarget> target) {
             }
         }
 
-        if (!WINDOW->m_ruleApplicator->static_.position.empty()) {
-            const auto COMPUTED = WINDOW->calculateExpression(WINDOW->m_ruleApplicator->static_.position);
+        if (WINDOW->m_ruleApplicator->static_.position) {
+            const auto COMPUTED = WINDOW->calculateExpression(*WINDOW->m_ruleApplicator->static_.position);
             if (!COMPUTED)
-                Log::logger->log(Log::ERR, "failed to parse {} as an expression", WINDOW->m_ruleApplicator->static_.position);
+                Log::logger->log(Log::ERR, "failed to parse {} as an expression", WINDOW->m_ruleApplicator->static_.position->toString());
             else {
                 windowGeometry.x = COMPUTED->x + MONITOR_POS.x;
                 windowGeometry.y = COMPUTED->y + MONITOR_POS.y;
@@ -121,6 +122,20 @@ void CDefaultFloatingAlgorithm::newTarget(SP<ITarget> target) {
 }
 
 void CDefaultFloatingAlgorithm::movedTarget(SP<ITarget> target, std::optional<Vector2D> focalPoint) {
+    if (target->window() && target->window()->m_pinned) {
+        // check if we intersect at all.
+
+        const auto BOX = target->position();
+
+        if (!m_parent->space() || !m_parent->space()->workspace() || !m_parent->space()->workspace()->m_monitor)
+            return;
+
+        const auto THIS_BOX = m_parent->space()->workspace()->m_monitor->logicalBox();
+
+        if (!THIS_BOX.intersection(BOX).empty())
+            return;
+    }
+
     auto       LAST_SIZE    = target->lastFloatingSize();
     const auto CURRENT_SIZE = target->position().size();
 
@@ -148,7 +163,7 @@ void CDefaultFloatingAlgorithm::movedTarget(SP<ITarget> target, std::optional<Ve
         // calculate new position
         const auto THIS_MON_POS = m_parent->space()->workspace()->m_monitor->m_position;
         const auto OLD_POS      = target->position().pos();
-        const auto MON_FROM_OLD = g_pCompositor->getMonitorFromVector(OLD_POS);
+        const auto MON_FROM_OLD = State::monitorState()->query().vec(OLD_POS).run();
         const auto NEW_POS      = MON_FROM_OLD ? OLD_POS - MON_FROM_OLD->m_position + THIS_MON_POS : OLD_POS;
 
         // put around the current center, fit in workArea
